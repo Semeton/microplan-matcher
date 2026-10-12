@@ -111,6 +111,16 @@ th { font-weight: 500; color: var(--muted); font-size: 0.8rem; }
 td .sub { color: var(--muted); font-size: 0.78rem; }
 td select { min-width: 200px; }
 
+.modes { display: inline-flex; background: var(--line); border-radius: 8px; padding: 3px; gap: 2px; }
+.modes button { border: 0; background: transparent; color: var(--muted); padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; }
+.modes button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+.modes button:hover:not([aria-pressed="true"]) { background: transparent; color: var(--ink); }
+.demo-table td { vertical-align: middle; }
+.demo-table input[type="number"] { width: 64px; font: inherit; font-size: 0.88rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.demo-table td.role { font-weight: 500; }
+.demo-table tr.off td:not(:first-child) { opacity: 0.4; }
+.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.settings .field { display: grid; gap: 4px; font-size: 0.85rem; color: var(--muted); }
 .status { font-size: 0.86rem; color: var(--muted); min-height: 1.4em; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 7px; font-size: 0.88rem; max-width: calc(100% - 32px); z-index: 10; }
 footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
@@ -120,8 +130,14 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
 
 <div class="wrap">
   <header>
-    <h1>Microplan Matcher</h1>
-    <p class="muted">Turn a microplan into a filled DIGIT HCM unified template.</p>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <h1>Microplan Matcher</h1>
+      <div class="modes" id="modes" role="group" aria-label="Mode">
+        <button type="button" data-mode="plan" aria-pressed="true">From microplan</button>
+        <button type="button" data-mode="demo" aria-pressed="false">Demo users</button>
+      </div>
+    </div>
+    <p class="muted" id="tagline">Turn a microplan into a filled DIGIT HCM unified template.</p>
   </header>
 
   <nav class="steps" id="steps" aria-label="Steps">
@@ -829,7 +845,69 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
     return bs >= 1 ? best : null;
   }
 
-  root.MP = { autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
+  // ───────────────────────── demo users ─────────────────────────
+  /** Level a console role normally sits at, as a template level index. */
+  function defaultRoleLevel(tree, role) {
+    const r = basicNorm(role);
+    const kinds = tree.levelLabels.map((l, i) => hierKind(l) || (i === 0 ? 'country' : null));
+    const find = (...ks) => { for (const k of ks) { const i = kinds.indexOf(k); if (i >= 0) return i; } return -1; };
+    let lvl = -1;
+    if (/national|country/.test(r)) lvl = 0;
+    else if (/state|province|provincial/.test(r)) lvl = find('state');
+    else if (/district|lga|county/.test(r)) lvl = find('lga');
+    else if (/warehouse|store|logistic/.test(r)) lvl = find('lga', 'state');
+    else if (/field supervisor|monitor|ward/.test(r)) lvl = find('ward', 'chiefdom', 'lga');
+    else if (/facility|hf|oic|in charge/.test(r)) lvl = find('hf');
+    else if (/distributor|dispenser|registrar|cdd|vaccinator|mobili/.test(r)) lvl = find('hf', 'dp', 'community');
+    if (lvl < 0) lvl = find('hf');
+    if (lvl < 0) lvl = Math.min(tree.depth, 4);
+    return lvl;
+  }
+
+  /** Boundaries at a level, spread evenly across the sorted hierarchy (so picks land in different branches). */
+  function spreadPick(tree, level, count) {
+    const all = Array.from(tree.nodes.values()).filter((n) => n.level === level && !n.synthetic)
+      .sort((a, b) => a.path.join('#').localeCompare(b.path.join('#')));
+    if (!all.length || count <= 0) return [];
+    if (count >= all.length) return all;
+    const out = [];
+    for (let i = 0; i < count; i++) out.push(all[Math.floor((i * all.length) / count + all.length / (2 * count))]);
+    return out;
+  }
+
+  function nextPhone(start, i) {
+    const digits = String(start || '').replace(/\D/g, '');
+    if (!digits) return '';
+    const n = (BigInt(digits) + BigInt(i)).toString();
+    return n.padStart(digits.length, '0');
+  }
+
+  /**
+   * Generate demo users.
+   * plan = { roles: [{ role, level, count }], allRoles: { level, count } | null, phoneStart, prefix }
+   * Returns [{ code, name, phone, roles: [..], path }]
+   */
+  function demoUsers(tree, plan) {
+    const out = [];
+    const prefix = (plan.prefix || 'Demo').trim();
+    const short = (role) => role.replace(/\s+/g, ' ').trim();
+    for (const r of plan.roles || []) {
+      if (!r.role || !(r.count > 0)) continue;
+      spreadPick(tree, Number(r.level), Number(r.count)).forEach((n, i) => {
+        out.push({ code: n.code, roles: [r.role], path: n.path, name: `${prefix} ${short(r.role)} ${String(i + 1).padStart(2, '0')}` });
+      });
+    }
+    if (plan.allRoles && plan.allRoles.count > 0) {
+      const roles = (plan.roles || []).filter((r) => r.role && r.include !== false).map((r) => r.role);
+      spreadPick(tree, Number(plan.allRoles.level), Number(plan.allRoles.count)).forEach((n, i) => {
+        out.push({ code: n.code, roles, path: n.path, name: `${prefix} All Roles ${String(i + 1).padStart(2, '0')}` });
+      });
+    }
+    out.forEach((u, i) => { u.phone = nextPhone(plan.phoneStart, i); });
+    return out;
+  }
+
+  root.MP = { defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
     valueFor, normPhone, validate, label, helpersFor, sha256hex, colLetter, aliasKey, hierKind, cellStr, toNum };
   if (typeof module !== 'undefined') module.exports = root.MP;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -969,7 +1047,10 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
           row.getCell(hm.HCM_ADMIN_CONSOLE_BOUNDARY_CODE).value = u.code;
           row.getCell(hm.HCM_ADMIN_CONSOLE_USER_NAME).value = u.name;
           if (hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER) row.getCell(hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER).value = u.phone;
-          if (hm.HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_1 && u.role) row.getCell(hm.HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_1).value = u.role;
+          const roles = (u.roles && u.roles.length ? u.roles : [u.role]).filter(Boolean);
+          const roleKeys = Object.keys(hm).filter((k) => /^HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_\d+$/.test(k)).sort((a, b) => hm[a] - hm[b]);
+          roles.slice(0, roleKeys.length).forEach((r, i) => { row.getCell(hm[roleKeys[i]]).value = r; });
+          if (roles.length > roleKeys.length) log.roleOverflow = (log.roleOverflow || 0) + 1;
           if (hm.HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE && plan.employmentType) row.getCell(hm.HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE).value = plan.employmentType;
           if (hm.HCM_ADMIN_CONSOLE_USER_USAGE) row.getCell(hm.HCM_ADMIN_CONSOLE_USER_USAGE).value = 'Active';
           row.commit && row.commit();
@@ -1055,7 +1136,24 @@ const S = {
   mpName: '', mpSheets: [], analyses: [],
   cfg: { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true },
   aliases: {}, res: null, showAuto: false, exportMsg: '',
+  mode: 'plan', demo: null, demoMsg: '',
 };
+function initDemo() {
+  if (!S.tree) { S.demo = null; return; }
+  const roles = S.facts.roleOptions.length ? S.facts.roleOptions : (S.demo ? S.demo.rows.map((r) => r.role) : []);
+  const hf = S.tree.levelLabels.findIndex((l) => MP.hierKind(l) === 'hf');
+  S.demo = {
+    rows: roles.map((role) => ({ role, include: true, level: MP.defaultRoleLevel(S.tree, role), count: 2 })),
+    allRoles: { on: true, level: hf >= 0 ? hf : Math.min(S.tree.depth, 4), count: 1 },
+    prefix: 'Demo', phoneStart: '09099990001',
+    empType: S.facts.employmentOptions.find((x) => /temp/i.test(x)) || S.facts.employmentOptions[0] || 'Temporary',
+  };
+}
+function demoPlan() {
+  const D = S.demo;
+  return { prefix: D.prefix, phoneStart: D.phoneStart, allRoles: D.allRoles.on ? { level: D.allRoles.level, count: D.allRoles.count } : null,
+    roles: D.rows.filter((r) => r.include).map((r) => ({ role: r.role, level: r.level, count: r.count })) };
+}
 
 // ───────── storage (per-viewer convenience only) ─────────
 const store = {
@@ -1175,7 +1273,11 @@ const ready = () => !!(S.tree && S.mpSheets.length);
 
 // ───────── shell ─────────
 function render() {
-  const can = { 1: true, 2: ready(), 3: ready() && !!S.res, 4: ready() && !!S.res };
+  document.querySelectorAll('#modes button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === S.mode)));
+  $('steps').hidden = S.mode === 'demo';
+  $('tagline').textContent = S.mode === 'demo' ? 'Create test users for every role across the boundary hierarchy, for demos and UAT.' : 'Turn a microplan into a filled DIGIT HCM unified template.';
+  if (S.mode === 'demo') { $('view').innerHTML = viewDemo(); return; }
+  const can ={ 1: true, 2: ready(), 3: ready() && !!S.res, 4: ready() && !!S.res };
   document.querySelectorAll('#steps button').forEach((b) => {
     const n = Number(b.dataset.go);
     b.classList.toggle('on', n === S.step); b.classList.toggle('done', n < S.step && can[n]);
@@ -1185,6 +1287,64 @@ function render() {
 }
 function go(n) { S.step = n; render(); window.scrollTo({ top: 0 }); }
 $('steps').addEventListener('click', (e) => { const b = e.target.closest('button[data-go]'); if (b && !b.disabled) go(Number(b.dataset.go)); });
+$('modes').addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (!b) return; S.mode = b.dataset.mode; if (S.mode === 'demo' && S.tree && !S.demo) initDemo(); render(); });
+
+// ───────── demo users ─────────
+function viewDemo() {
+  const tplMeta = S.tree ? `${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')} · ${plural(S.facts.roleOptions.length, 'role')} in the template` : '';
+  let h = `<div class="intro"><h2>Demo users</h2><p class="muted small">Only the console template is needed. Users are spread across different branches of the hierarchy so each demo login sees a different area.</p></div>
+    <div class="files">${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}</div>
+    <div class="status" role="status">${esc(S.busy)}</div>`;
+  if (!S.tree || !S.demo) return h;
+  const D = S.demo;
+  const lvlOpts = (cur) => S.tree.levelLabels.map((l, i) => opt(i, l, cur)).join('');
+  const users = MP.demoUsers(S.tree, demoPlan());
+  const nB = new Set(users.map((u) => u.code)).size;
+  h += `<div class="tbl"><table class="demo-table"><thead><tr><th>Role</th><th>Placed at</th><th>How many</th></tr></thead><tbody>
+    ${D.rows.map((r, i) => `<tr class="${r.include ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" data-dinc="${i}" ${r.include ? 'checked' : ''}> ${esc(r.role)}</label></td>
+      <td><select data-dlvl="${i}" aria-label="Level for ${esc(r.role)}">${lvlOpts(r.level)}</select></td>
+      <td><input type="number" min="0" max="50" data-dcnt="${i}" value="${r.count}" aria-label="How many ${esc(r.role)} users"></td></tr>`).join('')}
+    <tr class="${D.allRoles.on ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" id="dAllOn" ${D.allRoles.on ? 'checked' : ''}> One user with all ticked roles</label></td>
+      <td><select id="dAllLvl" aria-label="Level for all-roles users">${lvlOpts(D.allRoles.level)}</select></td>
+      <td><input type="number" min="0" max="50" id="dAllCnt" value="${D.allRoles.count}" aria-label="How many all-roles users"></td></tr>
+    </tbody></table></div>
+    ${!S.facts.roleOptions.length ? `<div class="row"><label for="dAddRole">This template has no role list. Add a role name</label><input type="text" id="dAddRole" placeholder="e.g. Distributor, then press Enter"></div>` : ''}
+    <div class="settings">
+      <label class="field">Name prefix<input type="text" id="dPrefix" value="${esc(D.prefix)}"></label>
+      <label class="field">First phone number<input type="text" id="dPhone" value="${esc(D.phoneStart)}" inputmode="numeric"></label>
+      <label class="field">Employment type${S.facts.employmentOptions.length ? `<select id="dEmp">${S.facts.employmentOptions.map((x) => opt(x, x, D.empType)).join('')}</select>` : `<input type="text" id="dEmp" value="${esc(D.empType)}">`}</label>
+    </div>
+    <p class="muted small">Phones count up from the first number. Use a range your team controls if the app sends OTPs or SMS.</p>
+    <div class="facts">
+      <div class="fact"><span class="mark ok">✓</span><div class="t">${plural(users.length, 'user')} across ${plural(nB, 'boundary', 'boundaries')}
+        <div class="d">${users.slice(0, 6).map((u) => `${esc(u.name)} — ${u.roles.length > 1 ? plural(u.roles.length, 'role') : esc(u.roles[0])} — ${esc(u.path.slice(1).join(' › ') || u.path[0])}`).join('<br>')}${users.length > 6 ? `<br>…and ${fmt(users.length - 6)} more` : ''}</div></div></div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button type="button" class="primary" id="dFill"${users.length ? '' : ' disabled'}>Download template with demo users</button>
+      <button type="button" class="quiet" id="dList"${users.length ? '' : ' disabled'}>Download user list (.csv)</button>
+    </div>
+    <div class="status" id="demoStatus" role="status">${esc(S.demoMsg)}</div>`;
+  return h;
+}
+async function demoFill(btn) {
+  btn.disabled = true; $('demoStatus').textContent = 'Writing the template…'; await tick();
+  try {
+    const users = MP.demoUsers(S.tree, demoPlan());
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(S.tplBuf.slice(0));
+    const log = await MPW.fillTemplate(wb, { tree: S.tree, agg: null, targetMap: {}, users: users.map((u) => ({ code: u.code, name: u.name, phone: u.phone, roles: u.roles })), employmentType: S.demo.empType });
+    const buf = await wb.xlsx.writeBuffer();
+    await saveFile(`${S.tplName.replace(/\.xlsx$/i, '')}_demo_users.xlsx`, new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    S.demoMsg = `Added ${plural(log.usersWritten, 'user')}.` + (log.roleOverflow ? ` ${plural(log.roleOverflow, 'user')} had more roles than the template has role columns; extra roles were left off.` : '');
+  } catch (err) { console.error(err); S.demoMsg = 'Could not write the template. ' + (err && err.message || err); }
+  $('demoStatus').textContent = S.demoMsg; btn.disabled = false;
+}
+function demoCsv() {
+  const users = MP.demoUsers(S.tree, demoPlan());
+  const q = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const lines = [['Name', 'Phone', 'Roles', 'Boundary code', 'Boundary'].map(q).join(',')]
+    .concat(users.map((u) => [u.name, u.phone, u.roles.join('; '), u.code, u.path.join(' > ')].map(q).join(',')));
+  saveFile(`${S.tplName.replace(/\.xlsx$/i, '')}_demo_users.csv`, new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
+}
 function nav(back, nextLabel, nextOk) {
   return `<div class="nav">${back ? `<button type="button" class="quiet" data-nav="${back}">← Back</button>` : '<span></span>'}${nextLabel ? `<button type="button" class="primary" data-nav="${S.step + 1}"${nextOk ? '' : ' disabled'}>${nextLabel}</button>` : ''}</div>`;
 }
@@ -1350,6 +1510,8 @@ view.addEventListener('click', async (e) => {
   if (t.id === 'acceptTop') { let n = 0; for (const d of needs()) if (d.status === 'review' && d.candidates && d.candidates[0]) { S.aliases[d.aliasKey] = d.candidates[0].code; n++; } saveAliases(); run(); render(); toast(`Accepted ${plural(n, 'suggestion')}`); return; }
   if (t.id === 'moreMenu') { const b = $('savedBox'); b.hidden = !b.hidden; t.setAttribute('aria-expanded', String(!b.hidden)); return; }
   if (t.id === 'expAlias') { saveFile(`microplan-decisions-${(S.tree.nodes.get(S.tree.roots[0]) || {}).name || 'boundaries'}.json`, new Blob([JSON.stringify({ root: S.tree.roots[0], saved: new Date().toISOString(), aliases: S.aliases }, null, 1)], { type: 'application/json' })); return; }
+  if (t.id === 'dFill') { demoFill(t); return; }
+  if (t.id === 'dList') { demoCsv(); return; }
   if (t.id === 'btnFill') { fillAndSave(t); return; }
   if (t.id === 'btnReport') { saveReport(); return; }
 });
@@ -1362,7 +1524,7 @@ view.addEventListener('change', async (e) => {
     const f = t.files[0]; if (!f) return;
     if (S.example) clearAll();
     S.busy = `Reading ${f.name}…`; render(); await tick();
-    try { const buf = await f.arrayBuffer(); if (t.id === 'fileTpl') await loadTemplate(buf, f.name); else await loadMicroplan(buf, f.name); if (ready()) { analyse(); run(); } S.busy = ''; }
+    try { const buf = await f.arrayBuffer(); if (t.id === 'fileTpl') { await loadTemplate(buf, f.name); initDemo(); S.demoMsg = ''; } else await loadMicroplan(buf, f.name); if (ready()) { analyse(); run(); } S.busy = ''; }
     catch (err) { console.error(err); S.busy = `Could not read ${f.name}. ${err && err.message ? err.message : ''}`; }
     render(); return;
   }
@@ -1381,6 +1543,22 @@ view.addEventListener('change', async (e) => {
     }
     if (t.value) decide(d, t.value);
     return;
+  }
+  // demo settings
+  if (S.mode === 'demo' && S.demo) {
+    const D = S.demo; const n = (v) => Math.max(0, Math.min(50, parseInt(v, 10) || 0));
+    if (t.dataset.dinc !== undefined) D.rows[t.dataset.dinc].include = t.checked;
+    else if (t.dataset.dlvl !== undefined) D.rows[t.dataset.dlvl].level = Number(t.value);
+    else if (t.dataset.dcnt !== undefined) D.rows[t.dataset.dcnt].count = n(t.value);
+    else if (t.id === 'dAllOn') D.allRoles.on = t.checked;
+    else if (t.id === 'dAllLvl') D.allRoles.level = Number(t.value);
+    else if (t.id === 'dAllCnt') D.allRoles.count = n(t.value);
+    else if (t.id === 'dPrefix') D.prefix = t.value || 'Demo';
+    else if (t.id === 'dPhone') D.phoneStart = t.value.replace(/\D/g, '');
+    else if (t.id === 'dEmp') D.empType = t.value;
+    else if (t.id === 'dAddRole') { const r = t.value.trim(); if (r) D.rows.push({ role: r, include: true, level: MP.defaultRoleLevel(S.tree, r), count: 2 }); }
+    else return;
+    S.demoMsg = ''; render(); return;
   }
   // column edits
   if (t.id === 'selSheet') { S.cfg.sheet = t.value; setupBoundarySheet(); }
@@ -1447,7 +1625,7 @@ function saveReport() {
 }
 
 function clearAll() {
-  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1 });
+  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '' });
   S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true };
 }
 
@@ -1466,12 +1644,16 @@ async function buildExample() {
   const bs = wb.addWorksheet('_h_Boundary_h_', { state: 'hidden' });
   let [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_FACILITY_CODE', 'HCM_ADMIN_CONSOLE_FACILITY_NAME', 'HCM_ADMIN_CONSOLE_FACILITY_TYPE', 'HCM_ADMIN_CONSOLE_FACILITY_STATUS', 'HCM_ADMIN_CONSOLE_FACILITY_CAPACITY', 'HCM_ADMIN_CONSOLE_FACILITY_USAGE'], ['Boundary Code', 'Facility Code', 'Facility Name', 'Facility Type', 'Facility Status', 'Capacity', 'Facility Usage']);
   fs.addRow(k); fs.addRow(l);
-  [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_USER_NAME', 'HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER', 'HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_1', 'HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE', 'HCM_ADMIN_CONSOLE_USER_USAGE'], ['Boundary Code', 'Name of the Person (Mandatory)', 'Phone Number (Mandatory)', 'User Role 1', 'Employment Type (Mandatory)', 'Active / Inactive']);
+  const roleKeys = [1, 2, 3, 4, 5].map((i) => 'HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_' + i);
+  [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_USER_NAME', 'HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER'].concat(roleKeys, ['HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE', 'HCM_ADMIN_CONSOLE_USER_USAGE']),
+    ['Boundary Code', 'Name of the Person (Mandatory)', 'Phone Number (Mandatory)'].concat([1, 2, 3, 4, 5].map((i) => 'User Role ' + i), ['Employment Type (Mandatory)', 'Active / Inactive']));
   us.addRow(k); us.addRow(l);
-  ['Distributor', 'Health Facility Supervisor', 'Warehouse Manager', 'Field Supervisor'].forEach((r) => rs.addRow([r]));
-  for (let r = 3; r <= 60; r++) {
-    us.getCell(r, 15).dataValidation = { type: 'list', allowBlank: true, formulae: ["'_h_Roles_h_'!$A$1:$A$4"] };
-    us.getCell(r, 16).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Permanent,Temporary"'] };
+  const roleList = ['Distributor', 'Health Facility Supervisor', 'Warehouse Manager', 'Field Supervisor', 'National Supervisor'];
+  roleList.forEach((r) => rs.addRow([r]));
+  const roleCol = k.indexOf(roleKeys[0]) + 1, empCol = k.indexOf('HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE') + 1;
+  for (let r = 3; r <= 80; r++) {
+    for (let c = roleCol; c < roleCol + 5; c++) us.getCell(r, c).dataValidation = { type: 'list', allowBlank: true, formulae: [`'_h_Roles_h_'!$A$1:$A$${roleList.length}`] };
+    us.getCell(r, empCol).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Permanent,Temporary"'] };
   }
   [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_TARGET_AZM_1', 'HCM_ADMIN_CONSOLE_TARGET_AZM_2', 'HCM_ADMIN_CONSOLE_TARGET'], ['Boundary Code', 'Target 1-11 months', 'Target 12-59 months', 'Total Target']);
   tg.addRow(k); tg.addRow(l);
@@ -1506,7 +1688,7 @@ async function bootExample() {
     clearAll(); S.example = true;
     await loadTemplate(tplBuf instanceof ArrayBuffer ? tplBuf : new Uint8Array(tplBuf).slice().buffer, 'Example_Akko_Unified_Template.xlsx');
     await loadMicroplan(mpBuf, 'Example_Akko_Microplan.xlsx');
-    analyse(); run();
+    analyse(); run(); initDemo();
   } catch (err) { console.error(err); }
   S.busy = ''; render();
 }
