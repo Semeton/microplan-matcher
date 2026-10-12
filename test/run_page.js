@@ -38,16 +38,22 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
   console.log('   edit form fields:', d.querySelectorAll('#editMap select').length, '| open by default:', d.getElementById('editMap').open);
   click('[data-nav="3"]');
   console.log('[3 Names]', txt(d.querySelector('.intro + div')), '|', d.querySelectorAll('.card').length, 'cards |', txt(d.querySelector('.card')));
-  const pick = d.querySelector('.card [data-pick]');
-  if (pick) { pick.click(); await wait(200); console.log('   after one click:', txt(d.querySelector('.big')), '| cards left', d.querySelectorAll('.card').length, '|', txt(d.querySelector('.done-state'))); }
-  console.log('   close-match rows available:', d.querySelectorAll('#autoBox select').length);
+  console.log('   card:', txt(d.querySelector('.card .q')), '|', txt(d.querySelector('.card .why')), '| options:', [...d.querySelectorAll('.card .choice')].map((b) => txt(b)).join(' / '));
+  const sb = d.querySelector('[data-toggle^="search:"]');
+  if (sb) {
+    sb.click(); await wait(50);
+    const inp = d.querySelector('[data-qsearch]'); const optv = d.querySelector('#' + inp.getAttribute('list') + ' option').value;
+    inp.value = optv; inp.dispatchEvent(new w.Event('change', { bubbles: true })); await wait(200);
+    console.log('   picked via search:', optv, '→', txt(d.querySelector('.big')), '|', txt(d.querySelector('.done-state')));
+  } else { d.querySelector('.card [data-pick]').click(); await wait(200); console.log('   picked:', txt(d.querySelector('.big'))); }
+  console.log('   close-match rows available:', d.querySelectorAll('#autoBox select').length, '| decisions note:', txt(d.querySelector('.nav + p')).slice(0, 60));
   click('[data-nav="4"]');
   console.log('[4 Export]', txt(d.querySelector('.intro')));
   console.log('   checks:', [...d.querySelectorAll('.facts .fact .t')].map((t) => t.childNodes[0].textContent.trim()).join(' | '));
   // resolve problems by editing the affected rows
   const fire = (el, v) => { if (v !== undefined) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } el.dispatchEvent(new w.Event('change', { bubbles: true })); };
   const cellIn = (ref, kind) => [...d.querySelectorAll('[data-cell]')].find((i) => { const [sh, ri, , k] = i.dataset.cell.split('|'); return sh + '!' + (Number(ri) + 1) === ref && k === kind; });
-  console.log('   grid rows shown:', [...d.querySelectorAll('table.grid tbody tr')].length, '| phone cells:', [...d.querySelectorAll('[data-cell$="|p"]')].map((i) => i.value).join(', '));
+  console.log('   row cards:', d.querySelectorAll('.rowcard').length, '| first:', txt(d.querySelector('.rowcard .rc-head')), '|', '| phone cells:', [...d.querySelectorAll('[data-cell$="|p"]')].map((i) => i.value).join(', '));
   fire(cellIn('UserList!4', 'p'), '08123456790');
   click('[data-rm="UserList!6"]'); await wait(50);
   for (const k of ['Near-duplicate names', 'HF without OIC']) click(`[data-toggle="fix:${k}"]`);

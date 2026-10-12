@@ -105,6 +105,25 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .done-state { text-align: center; padding: 18px 0 6px; display: grid; gap: 6px; }
 
 .tbl { overflow-x: auto; }
+.card .q { font-weight: 600; }
+.card .why { font-size: 0.86rem; color: var(--muted); }
+.choice-list { display: grid; gap: 6px; }
+button.choice { display: flex; justify-content: space-between; align-items: center; gap: 4px 12px; flex-wrap: wrap; width: 100%; text-align: left; padding: 10px 12px; }
+button.choice .nm { font-weight: 500; overflow-wrap: anywhere; }
+button.choice .meta { font-family: var(--f-mono); font-size: 0.74rem; color: var(--faint); overflow-wrap: anywhere; }
+button.choice.alt { border-style: dashed; color: var(--muted); }
+button.choice.alt .nm { font-weight: 400; }
+.choice-list input[type="text"] { padding: 10px 12px; }
+.rowcards { display: grid; gap: 8px; margin-top: 8px; }
+.rowcard { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; min-width: 0; }
+.rc-head { display: flex; flex-wrap: wrap; gap: 2px 12px; align-items: baseline; }
+.rc-head > button { margin-left: auto; padding: 2px 6px; }
+.rc-ref { font-family: var(--f-mono); font-size: 0.76rem; color: var(--faint); }
+.rc-problem { color: var(--err); font-size: 0.84rem; }
+.rc-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.rc-fields label, .rc-fields > div { display: grid; gap: 3px; min-width: 0; }
+.rc-label { font-size: 0.74rem; color: var(--muted); }
+.rc-fields input { width: 100%; }
 table.grid td { padding: 4px 6px; vertical-align: middle; }
 table.grid input[type="text"] { padding: 5px 7px; font-size: 0.85rem; min-width: 110px; }
 table.grid tr:hover td { background: var(--hover); }
@@ -174,7 +193,8 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
 const tick = () => new Promise((r) => setTimeout(r, 0));
-const plural = (n, w, p) => `${fmt(n)} ${n === 1 ? w : (p || w + 's')}`;
+const pluralWord = (w) => (/[^aeiou]y$/i.test(w) ? w.slice(0, -1) + 'ies' : /(s|x|ch|sh)$/i.test(w) ? w + 'es' : w + 's');
+const plural = (n, w, p) => `${fmt(n)} ${n === 1 ? w : (p || pluralWord(w))}`;
 
 const S = {
   step: 1, example: false, busy: '',
@@ -503,14 +523,16 @@ function viewNames() {
   }
   if (auto.length) {
     h += `<details class="edit"${S.showAuto ? ' open' : ''} id="autoBox"><summary>${S.showAuto ? 'Hide' : 'Review'} ${plural(auto.length, 'close match', 'close matches')}</summary>
-      <div class="tbl"><table><thead><tr><th>In the microplan</th><th>Matched to</th></tr></thead><tbody>
-      ${auto.slice(0, 300).map((d, i) => `<tr><td>${esc(d.name)}<div class="sub">${esc(S.tree.levelLabels[d.level])}${d.status !== 'fuzzy' ? ' · ' + STATUS_LABEL[d.status] : ''}</div></td><td><select data-auto="${i}" aria-label="Boundary for ${esc(d.name)}">${choiceOptions(d, d.code || (d.status === 'skipped' ? '__SKIP__' : ''))}</select></td></tr>`).join('')}
-      </tbody></table></div></details>`;
+      <p class="small muted" style="margin-bottom:8px">Names that matched with small spelling differences. Change any that are wrong.</p>
+      <div class="rowcards">${auto.slice(0, 300).map((d, i) => `<div class="rowcard"><div class="rc-fields" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+        <div><div class="rc-label">${esc(S.tree.levelLabels[d.level])} in microplan</div><div>${esc(d.name)}${d.status !== 'fuzzy' ? ` <span class="tag">· ${STATUS_LABEL[d.status]}</span>` : ''}</div></div>
+        <label><span class="rc-label">Matched to</span><select data-auto="${i}" aria-label="Boundary for ${esc(d.name)}">${choiceOptions(d, d.code || (d.status === 'skipped' ? '__SKIP__' : ''))}</select></label>
+      </div></div>`).join('')}</div></details>`;
   }
-  h += `<div class="nav"><button type="button" class="quiet" data-nav="2">← Back</button><span style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="quiet" id="moreMenu" aria-expanded="false">Saved decisions</button><button type="button" class="primary" data-nav="4">Continue</button></span></div>
-    <div id="savedBox" hidden class="small muted" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">${fmt(Object.keys(S.aliases).length)} saved${S.example ? ' (example, not kept)' : ''}
+  h += `<div class="nav"><button type="button" class="quiet" data-nav="2">← Back</button><button type="button" class="primary" data-nav="4">Continue</button></div>
+    <p class="small muted" style="display:flex;gap:4px 10px;flex-wrap:wrap;align-items:center">${plural(Object.keys(S.aliases).length, 'decision')} saved in this browser${S.example ? ' (not kept for the example)' : ''}.
       <button type="button" class="quiet" id="expAlias">Export</button>
-      <label class="quiet" style="position:relative;color:var(--accent);cursor:pointer">Import<input type="file" id="impAlias" accept=".json" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label></div>`;
+      <label class="quiet" style="position:relative;color:var(--accent);cursor:pointer;padding:0 6px">Import<input type="file" id="impAlias" accept=".json" style="position:absolute;inset:0;opacity:0;cursor:pointer" aria-label="Import decisions"></label></p>`;
   S._q = q.slice(0, 25); S._auto = auto.slice(0, 300);
   return h;
 }
@@ -520,16 +542,30 @@ function choiceOptions(d, cur) {
   return extra.concat(cands).map((c) => opt(c.code, c.name, cur)).join('') + opt('__ALL__', 'Show all options…', '') + opt('__SKIP__', 'Not in the template (skip)', cur);
 }
 function card(d, i) {
-  const parent = d.parentCodes && d.parentCodes.length === 1 ? MP.label(S.tree, d.parentCodes[0]) : '';
-  const top = (d.candidates || []).filter((c) => c.score >= 0.5).slice(0, 3);
+  const lvl = S.tree.levelLabels[d.level] || 'boundary';
+  const parentCode = d.parentCodes && d.parentCodes.length === 1 ? d.parentCodes[0] : null;
+  const parentNode = parentCode && S.tree.nodes.get(parentCode);
+  const parentName = parentNode ? parentNode.name : 'its parent';
+  const cands = (d.candidates || []).filter((c) => c.score >= 0.5).slice(0, 4);
+  const sameName = cands.filter((c) => c.score >= 0.999).length;
+  const why = d.status === 'ambiguous' ? `The template has ${sameName} ${pluralWord(lvl)} with this name under ${parentName}. Pick the right one.`
+    : d.status === 'review' ? `No exact match under ${parentName}. These are the closest names.`
+    : cands.length ? `Not found under ${parentName}. The closest names are below.` : `Not found under ${parentName}.`;
+  const nSib = parentCodeList(d).reduce((n, pc) => n + descendants(pc, d.level).length, 0);
+  const searching = !!S.open['search:' + d.key];
   return `<div class="card">
-    <div class="who"><span><b>${esc(d.name)}</b> <span class="tag">· ${esc(S.tree.levelLabels[d.level])} · ${plural(d.count, 'row')}</span></span><span class="tag">${STATUS_LABEL[d.status]}</span></div>
-    ${parent ? `<div class="where">in ${esc(parent)}</div>` : ''}
-    <div class="choices">
-      ${top.map((c) => `<button type="button" data-pick="${i}" data-code="${esc(c.code)}">${esc(c.name)}<span class="pc">${Math.round(c.score * 100)}%</span></button>`).join('')}
-      <select data-q="${i}" aria-label="Other boundary for ${esc(d.name)}"><option value="">Other…</option>${opt('__ALL__', 'Show all options…', '')}${opt('__SKIP__', 'Not in the template (skip)', '')}</select>
+    <div class="q">Which ${esc(lvl)} is “${esc(d.name)}”?</div>
+    <div class="where">${parentNode ? 'Under ' + esc(MP.label(S.tree, parentCode)) + ' · ' : ''}used in ${plural(d.count, 'microplan row')}</div>
+    <div class="why">${esc(why)}</div>
+    <div class="choice-list">
+      ${cands.map((c) => `<button type="button" class="choice" data-pick="${i}" data-code="${esc(c.code)}"><span class="nm">${esc(c.name)}</span><span class="meta">${c.score >= 0.999 ? 'same name' : Math.round(c.score * 100) + '% similar'} · ${esc(c.code)}</span></button>`).join('')}
+      ${searching ? `<input type="text" list="dl-${i}" data-qsearch="${i}" placeholder="Type to search ${fmt(nSib)} ${esc(pluralWord(lvl))}" aria-label="Search ${esc(pluralWord(lvl))} under ${esc(parentName)}" autocomplete="off">
+        <datalist id="dl-${i}">${parentCodeList(d).flatMap((pc) => descendants(pc, d.level)).sort((x, y) => x.name.localeCompare(y.name)).map((n) => `<option value="${esc(n.name + ' — ' + n.code)}"></option>`).join('')}</datalist>`
+        : nSib > cands.length ? `<button type="button" class="choice alt" data-toggle="search:${esc(d.key)}"><span class="nm">Search all ${fmt(nSib)} ${esc(pluralWord(lvl))} under ${esc(parentName)}</span></button>` : ''}
+      <button type="button" class="choice alt" data-pick="${i}" data-code="__SKIP__"><span class="nm">Not in the template — leave ${d.count === 1 ? 'this row' : 'these ' + fmt(d.count) + ' rows'} out</span></button>
     </div></div>`;
 }
+const parentCodeList = (d) => (d.parentCodes && d.parentCodes.length ? d.parentCodes : S.tree.roots);
 
 // ───────── 4 · export ─────────
 const PHONE_RULES = ['Phone', 'Duplicate phone'];
@@ -645,28 +681,22 @@ function gridCols(sheet, rule) {
 }
 function rowGrid(refs, rule, showAll) {
   const shown = showAll ? refs : refs.slice(0, ROWS_SHOWN);
-  const bySheet = new Map(); for (const r of shown) { const { sheet } = parseRef(r); if (!bySheet.has(sheet)) bySheet.set(sheet, []); bySheet.get(sheet).push(r); }
-  let h = '';
-  for (const [sheet, rs] of bySheet) {
-    const cols = gridCols(sheet, rule);
-    h += `<div class="tbl" style="margin-top:8px"><table class="grid"><thead><tr><th>Row</th>${cols.map((c) => `<th>${esc(c.label)}</th>`).join('')}<th>Problem</th><th></th></tr></thead><tbody>
-      ${rs.map((ref) => { const { ri } = parseRef(ref);
-        return `<tr><td class="mono muted">${esc(ref)}</td>${cols.map((c) => `<td><input type="text" data-cell="${esc(sheet)}|${ri}|${c.c}|${c.kind}" value="${esc(cellAt(sheet, ri, c.c))}" aria-label="${esc(c.label)}, ${esc(ref)}"${c.kind === 'n' ? ' inputmode="numeric" style="width:90px"' : c.kind === 'p' ? ' inputmode="tel" style="width:130px"' : ''}></td>`).join('')}
-          <td class="small" style="color:var(--err)">${esc((S._rowMsgs.get(ref) || []).join('; '))}</td><td><button type="button" class="quiet" data-rm="${esc(ref)}">Remove</button></td></tr>`; }).join('')}
-      </tbody></table></div>`;
-  }
-  if (refs.some((r) => gridCols(parseRef(r).sheet, rule).some((c) => c.kind === 'h'))) h += `<p class="small muted" style="margin-top:4px">Renaming a boundary changes it in every row that uses it.</p>`;
-  return h;
+  const fieldInput = (sheet, ri, c, ref) => `<label><span class="rc-label">${esc(c.label)}</span><input type="text" data-cell="${esc(sheet)}|${ri}|${c.c}|${c.kind}" value="${esc(cellAt(sheet, ri, c.c))}" aria-label="${esc(c.label)}, ${esc(ref)}"${c.kind === 'n' ? ' inputmode="numeric"' : c.kind === 'p' ? ' inputmode="tel"' : ''}></label>`;
+  const cards = shown.map((ref) => {
+    const { sheet, ri } = parseRef(ref); const cols = gridCols(sheet, rule);
+    const msgs = Array.from(new Set(S._rowMsgs.get(ref) || []));
+    return `<div class="rowcard"><div class="rc-head"><span class="rc-ref">${esc(ref)}</span><span class="rc-problem">${esc(msgs.join(' · '))}</span><button type="button" class="quiet" data-rm="${esc(ref)}">Remove row</button></div>
+      <div class="rc-fields">${cols.map((c) => fieldInput(sheet, ri, c, ref)).join('')}</div></div>`;
+  }).join('');
+  const renames = shown.some((r) => gridCols(parseRef(r).sheet, rule).some((c) => c.kind === 'h'));
+  return `<div class="rowcards">${cards}</div>${renames ? '<p class="small muted" style="margin-top:4px">Renaming a boundary changes it in every row that uses it.</p>' : ''}`;
 }
 function renameGrid(issues, showAll) {
-  const vs = issues.flatMap((i) => i.variants.map((v, k) => Object.assign({}, v, { group: issues.indexOf(i), first: k === 0, size: i.variants.length })));
+  const vs = issues.flatMap((i) => i.variants);
   const shown = showAll ? vs : vs.slice(0, ROWS_SHOWN);
-  return `<div class="tbl" style="margin-top:8px"><table class="grid"><thead><tr><th>Level</th><th>Name</th><th class="num">Rows</th><th>Under</th></tr></thead><tbody>
-    ${shown.map((v) => { const { sheet, ri } = parseRef(v.ref); const col = levelCol(sheet, v.level); const under = parentPath(sheet, ri, v.level);
-      return `<tr${v.first && v.group > 0 ? ' style="border-top:2px solid var(--line)"' : ''}><td class="small muted">${esc(S.tree.levelLabels[v.level])}</td>
-        <td>${col == null ? esc(v.name) : `<input type="text" data-cell="${esc(sheet)}|${ri}|${col}|h" value="${esc(v.name)}" aria-label="Name ${esc(v.name)}">`}</td>
-        <td class="num">${fmt(v.count)}</td><td class="small muted">${esc(under)}</td></tr>`; }).join('')}
-    </tbody></table></div>`;
+  return `<div class="rowcards">${shown.map((v) => { const { sheet, ri } = parseRef(v.ref); const col = levelCol(sheet, v.level); const under = parentPath(sheet, ri, v.level);
+    return `<div class="rowcard"><div class="rc-head"><span class="rc-ref">${esc(S.tree.levelLabels[v.level])}${under ? ' under ' + esc(under) : ''} · ${plural(v.count, 'row')}</span></div>
+      <div class="rc-fields"><label><span class="rc-label">Name</span>${col == null ? esc(v.name) : `<input type="text" data-cell="${esc(sheet)}|${ri}|${col}|h" value="${esc(v.name)}" aria-label="Name ${esc(v.name)}">`}</label></div></div>`; }).join('')}</div>`;
 }
 function levelCol(sheet, level) {
   const lm = sheet === S.cfg.userSheet ? S.cfg.userLevelMap : sheet === S.cfg.sheet ? S.cfg.levelMap : remapByLabel(A(sheet), A(S.cfg.sheet), S.cfg.levelMap);
@@ -679,14 +709,12 @@ function parentPath(sheet, ri, level) {
 function addUserGrid(codes, need, showAll) {
   if (!S.cfg.userSheet) return '';
   const shown = showAll ? codes : codes.slice(0, ROWS_SHOWN);
-  const roleName = needRole(need).role;
-  return `<div class="tbl" style="margin-top:8px"><table class="grid"><thead><tr><th>Facility</th><th>Name</th><th>Phone</th><th></th></tr></thead><tbody>
-    ${shown.map((code) => { const n = S.tree.nodes.get(code); const id = 'add-' + need + '-' + code.replace(/[^A-Za-z0-9_-]/g, '');
-      return `<tr><td>${esc(n.name)}<div class="sub">${esc(n.path.slice(-2, -1)[0] || '')}</div></td>
-        <td><input type="text" id="${id}-n" placeholder="Full name" aria-label="Name for ${esc(n.name)}"></td>
-        <td><input type="text" id="${id}-p" placeholder="080…" inputmode="tel" style="width:130px" aria-label="Phone for ${esc(n.name)}"></td>
-        <td><button type="button" class="quiet" data-add="${esc(code)}|${need}|${id}">Add ${esc(roleName || (need === 'oic' ? 'OIC' : 'CDD'))}</button></td></tr>`; }).join('')}
-    </tbody></table></div>`;
+  const roleName = needRole(need).role || (need === 'oic' ? 'OIC' : 'CDD');
+  return `<div class="rowcards">${shown.map((code) => { const n = S.tree.nodes.get(code); const id = 'add-' + need + '-' + code.replace(/[^A-Za-z0-9_-]/g, '');
+    return `<div class="rowcard"><div class="rc-head"><span><b style="font-weight:500">${esc(n.name)}</b> <span class="rc-ref">${esc(n.path.slice(-2, -1)[0] || '')}</span></span></div>
+      <div class="rc-fields"><label><span class="rc-label">Name</span><input type="text" id="${id}-n" placeholder="Full name" aria-label="Name for ${esc(n.name)}"></label>
+        <label><span class="rc-label">Phone</span><input type="text" id="${id}-p" placeholder="080…" inputmode="tel" aria-label="Phone for ${esc(n.name)}"></label>
+        <div style="display:flex;align-items:end"><button type="button" data-add="${esc(code)}|${need}|${id}">Add as ${esc(roleName)}</button></div></div></div>`; }).join('')}</div>`;
 }
 /** Designation to write for a needed role kind, reusing one already in the user list when possible. */
 function needRole(need) {
@@ -751,7 +779,6 @@ view.addEventListener('click', async (e) => {
   if (t.id === 'clearEx') { clearAll(); render(); return; }
   if (t.dataset.pick !== undefined) { const d = S._q[Number(t.dataset.pick)]; decide(d, t.dataset.code); return; }
   if (t.id === 'acceptTop') { let n = 0; for (const d of needs()) if (d.status === 'review' && d.candidates && d.candidates[0]) { S.aliases[d.aliasKey] = d.candidates[0].code; n++; } saveAliases(); run(); render(); toast(`Accepted ${plural(n, 'suggestion')}`); return; }
-  if (t.id === 'moreMenu') { const b = $('savedBox'); b.hidden = !b.hidden; t.setAttribute('aria-expanded', String(!b.hidden)); return; }
   if (t.id === 'expAlias') { saveFile(`microplan-decisions-${(S.tree.nodes.get(S.tree.roots[0]) || {}).name || 'boundaries'}.json`, new Blob([JSON.stringify({ root: S.tree.roots[0], saved: new Date().toISOString(), aliases: S.aliases }, null, 1)], { type: 'application/json' })); return; }
   if (t.dataset.ack !== undefined) { S.acks.add(t.dataset.ack); render(); return; }
   if (t.dataset.unack !== undefined) { S.acks.delete(t.dataset.unack); render(); return; }
@@ -789,10 +816,17 @@ view.addEventListener('change', async (e) => {
     catch (err) { toast('That file is not a decisions export'); }
     return;
   }
-  if (t.dataset.q !== undefined || t.dataset.auto !== undefined) {
-    const d = t.dataset.q !== undefined ? S._q[Number(t.dataset.q)] : S._auto[Number(t.dataset.auto)];
+  if (t.dataset.qsearch !== undefined) {
+    const d = S._q[Number(t.dataset.qsearch)]; const v = t.value.trim(); if (!v) return;
+    const all = parentCodeList(d).flatMap((pc) => descendants(pc, d.level));
+    const hit = all.find((n) => n.name + ' — ' + n.code === v) || (all.filter((n) => n.name.toLowerCase() === v.toLowerCase()).length === 1 ? all.find((n) => n.name.toLowerCase() === v.toLowerCase()) : null);
+    if (hit) { S.open['search:' + d.key] = false; decide(d, hit.code); } else toast('Pick a name from the list');
+    return;
+  }
+  if (t.dataset.auto !== undefined) {
+    const d = S._auto[Number(t.dataset.auto)];
     if (t.value === '__ALL__') {
-      const all = []; for (const pc of d.parentCodes) all.push(...descendants(pc, d.level));
+      const all = []; for (const pc of parentCodeList(d)) all.push(...descendants(pc, d.level));
       all.sort((x, y) => x.name.localeCompare(y.name));
       t.innerHTML = `<option value="">Choose (${all.length})</option>` + all.map((n) => opt(n.code, n.name, '')).join('') + opt('__SKIP__', 'Not in the template (skip)', '');
       t.focus(); return;
