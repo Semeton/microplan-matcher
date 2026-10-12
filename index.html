@@ -105,6 +105,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .done-state { text-align: center; padding: 18px 0 6px; display: grid; gap: 6px; }
 
 .tbl { overflow-x: auto; }
+table.grid td { padding: 4px 6px; vertical-align: middle; }
+table.grid input[type="text"] { padding: 5px 7px; font-size: 0.85rem; min-width: 110px; }
+table.grid tr:hover td { background: var(--hover); }
 table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-weight: 500; color: var(--muted); font-size: 0.8rem; }
@@ -695,7 +698,7 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
     for (const m of matched) {
       if (m.status === 'broken') add('error', 'Incomplete path', 'Row has a deeper boundary filled but a parent level blank: ' + m.names.join(' › '), m.sheet + '!' + m.row);
     }
-    // near-duplicate siblings inside the microplan
+    // near-duplicate siblings inside the microplan (variants carry the first row that uses them)
     const sib = new Map();
     for (const m of matched) {
       if (!m.path) continue;
@@ -705,21 +708,35 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
         if (!sib.has(k)) sib.set(k, new Map());
         const squashed = canon(m.path[i].name).replace(/ /g, '');
         const g = sib.get(k);
-        if (!g.has(squashed)) g.set(squashed, new Set());
-        g.get(squashed).add(m.path[i].name);
+        if (!g.has(squashed)) g.set(squashed, new Map());
+        const v = g.get(squashed);
+        if (!v.has(m.path[i].name)) v.set(m.path[i].name, { name: m.path[i].name, level: m.path[i].level, ref: m.sheet + '!' + m.row, count: 0 });
+        v.get(m.path[i].name).count++;
       }
     }
-    for (const g of sib.values()) for (const names of g.values()) if (names.size > 1) add('warn', 'Near-duplicate names', 'Same boundary written differently: ' + Array.from(names).map((n) => '"' + n + '"').join(' vs '));
+    for (const g of sib.values()) for (const v of g.values()) if (v.size > 1) {
+      const variants = Array.from(v.values());
+      add('warn', 'Near-duplicate names', 'Same boundary written differently: ' + variants.map((x) => '"' + x.name + '"').join(' vs '), variants[0].ref);
+      issues[issues.length - 1].variants = variants;
+    }
 
     if (specialCharsCheck) {
-      const bad = new Set();
-      for (const m of matched) for (const p of m.path || []) if (/[^A-Za-z0-9 \-\/().,'&]/.test(p.name)) bad.add(p.name);
-      if (bad.size) { add('warn', 'Special characters', bad.size + ' boundary names contain special characters (e.g. ' + Array.from(bad).slice(0, 3).map((x) => '"' + x + '"').join(', ') + ')'); issues[issues.length - 1].items = Array.from(bad).sort(); }
+      const bad = new Map();
+      for (const m of matched) for (const p of m.path || []) if (/[^A-Za-z0-9 \-\/().,'&]/.test(p.name)) {
+        if (!bad.has(p.name + '|' + p.level)) bad.set(p.name + '|' + p.level, { name: p.name, level: p.level, ref: m.sheet + '!' + m.row, count: 0 });
+        bad.get(p.name + '|' + p.level).count++;
+      }
+      if (bad.size) {
+        const variants = Array.from(bad.values()).sort((a, b) => a.name.localeCompare(b.name));
+        add('warn', 'Special characters', bad.size + ' boundary names contain special characters (e.g. ' + variants.slice(0, 3).map((x) => '"' + x.name + '"').join(', ') + ')');
+        Object.assign(issues[issues.length - 1], { variants, items: variants.map((x) => x.name) });
+      }
     }
 
     if (agg) {
-      for (const c of agg.conflicts) add('error', 'Duplicate rows', 'Two microplan rows resolve to the same boundary ' + label(tree, c.code) + ' — values were summed', c.rows.join(', '));
-      for (const t of agg.twoLevel.slice(0, 200)) add('error', 'Targets at two levels', 'Targets given for ' + label(tree, t.child) + ' and also for its ancestor ' + label(tree, t.ancestor) + ' — totals will double count');
+      const refOf = new Map(); for (const m of matched) if (m.code && m.values && Object.keys(m.values).length && !refOf.has(m.code)) refOf.set(m.code, m.sheet + '!' + m.row);
+      for (const c of agg.conflicts) { add('error', 'Duplicate rows', 'Two microplan rows resolve to the same boundary ' + label(tree, c.code) + ' — values were summed', c.rows[1]); issues[issues.length - 1].refs = c.rows.slice(); }
+      for (const t of agg.twoLevel.slice(0, 200)) { add('error', 'Targets at two levels', 'Targets given for ' + label(tree, t.child) + ' and also for its ancestor ' + label(tree, t.ancestor) + ' — totals will double count', refOf.get(t.child)); issues[issues.length - 1].refs = [refOf.get(t.ancestor), refOf.get(t.child)].filter(Boolean); }
       // facility totals parked on one child (MC master-data convention: target on the first community)
       const byParent = new Map();
       for (const code of agg.direct.keys()) { const n = tree.nodes.get(code); if (!n || !n.parent) continue; byParent.set(n.parent, (byParent.get(n.parent) || 0) + 1); }
@@ -753,9 +770,10 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
       if (ctx.hfLevel !== undefined && ctx.hfLevel !== null) {
         const hfs = new Set(); for (const m of matched) if (m.code) { let n = tree.nodes.get(m.code); while (n && n.level > ctx.hfLevel) n = tree.nodes.get(n.parent); if (n && n.level === ctx.hfLevel) hfs.add(n.code); }
         const exO = [], exC = [];
-        for (const hf of hfs) { const cnt = perHF.get(hf) || { oic: 0, cdd: 0 }; if (!cnt.oic) exO.push(label(tree, hf)); if (!cnt.cdd) exC.push(label(tree, hf)); }
-        if (exO.length) { add('warn', 'HF without OIC', exO.length + ' facilities have no OIC / HF worker, e.g. ' + exO.slice(0, 3).join('; ')); issues[issues.length - 1].items = exO.sort(); }
-        if (exC.length) { add('warn', 'HF without CDD', exC.length + ' facilities have no distributor, e.g. ' + exC.slice(0, 3).join('; ')); issues[issues.length - 1].items = exC.sort(); }
+        for (const hf of hfs) { const cnt = perHF.get(hf) || { oic: 0, cdd: 0 }; if (!cnt.oic) exO.push(hf); if (!cnt.cdd) exC.push(hf); }
+        const byLabel = (a, b) => label(tree, a).localeCompare(label(tree, b));
+        if (exO.length) { exO.sort(byLabel); add('warn', 'HF without OIC', exO.length + ' facilities have no OIC / HF worker, e.g. ' + exO.slice(0, 3).map((c) => label(tree, c)).join('; ')); Object.assign(issues[issues.length - 1], { codes: exO, items: exO.map((c) => label(tree, c)), need: 'oic' }); }
+        if (exC.length) { exC.sort(byLabel); add('warn', 'HF without CDD', exC.length + ' facilities have no distributor, e.g. ' + exC.slice(0, 3).map((c) => label(tree, c)).join('; ')); Object.assign(issues[issues.length - 1], { codes: exC, items: exC.map((c) => label(tree, c)), need: 'cdd' }); }
       }
     }
     return issues;
@@ -1149,7 +1167,7 @@ const S = {
   cfg: { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true },
   aliases: {}, res: null, showAuto: false, exportMsg: '',
   mode: 'plan', demo: null, demoMsg: '',
-  userEdits: {}, acks: new Set(), open: {},
+  mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {},
 };
 function initDemo() {
   if (!S.tree) { S.demo = null; return; }
@@ -1206,7 +1224,23 @@ async function loadTemplate(buf, name) {
   S.facts = MPW.templateFacts(ewb);
   loadAliases();
 }
-async function loadMicroplan(buf, name) { S.mpName = name; S.mpSheets = sheetsFromXLSX(buf, true); }
+async function loadMicroplan(buf, name) {
+  S.mpName = name; S.mpOrig = sheetsFromXLSX(buf, true);
+  S.edits = { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }; S.acks = new Set(); S.open = {};
+  applyEdits();
+}
+// The engine always reads S.mpSheets: the original workbook with cell edits, removed rows and added rows applied.
+function applyEdits() {
+  const E = S.edits;
+  S.mpSheets = S.mpOrig.map((sh) => ({ name: sh.name, hidden: sh.hidden,
+    rows: sh.rows.concat(E.added[sh.name] || []).map((r, ri) => {
+      if (E.removed.has(sh.name + '!' + (ri + 1))) return [];
+      const pt = E.patches[sh.name + '|' + ri]; if (!pt) return r;
+      const c = (r || []).slice(); for (const k of Object.keys(pt)) c[k] = pt[k]; return c;
+    }) }));
+}
+const parseRef = (ref) => { const i = ref.lastIndexOf('!'); return { sheet: ref.slice(0, i), ri: Number(ref.slice(i + 1)) - 1 }; };
+const cellAt = (sheet, ri, col) => { const sh = S.mpSheets.find((x) => x.name === sheet); return sh ? MP.cellStr((sh.rows[ri] || [])[col]) : ''; };
 
 function analyse() {
   const labels = S.tree ? S.tree.levelLabels : [];
@@ -1264,11 +1298,8 @@ function run() {
     const um = MP.matchRecords(S.tree, MP.extractRecords(ush, ua, S.cfg.userLevelMap, [], S.cfg.person), S.aliases);
     uDecisions = um.decisions;
     users = um.matched.filter((u) => u.person).map((u) => {
-      const ref = u.sheet + '!' + u.row; const ed = S.userEdits[ref] || {};
-      u.ref = ref; u.givenPhone = u.person.phone;
-      if (ed.phone !== undefined) u.person = Object.assign({}, u.person, { phone: ed.phone });
       const role = S.cfg.roleMap[u.person.role] || '';
-      return Object.assign(u, { phoneNorm: MP.normPhone(u.person.phone, S.cfg.phoneFmt), role, roleKind: MPW.roleKind(role), skipped: !!ed.skip, edited: ed.phone !== undefined });
+      return Object.assign(u, { ref: u.sheet + '!' + u.row, phoneNorm: MP.normPhone(u.person.phone, S.cfg.phoneFmt), role, roleKind: MPW.roleKind(role) });
     });
   }
   const hfLevel = S.tree.levelLabels.findIndex((l) => MP.hierKind(l) === 'hf');
@@ -1486,14 +1517,14 @@ function card(d, i) {
 
 // ───────── 4 · export ─────────
 const PHONE_RULES = ['Phone', 'Duplicate phone'];
+const ROWS_SHOWN = 8;
 function viewExport() {
   const R = S.res;
   const tmap = Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null);
   const leaf = S.tree.depth; let rows = 0, filled = 0;
   if (tmap.length) for (const n of S.tree.nodes.values()) { if (n.level !== leaf || n.synthetic) continue; rows++; if (MP.valueFor(S.tree, R.agg, n.code, Number(tmap[0][1]), S.cfg.splitMode).v != null) filled++; }
   const unresolved = R.matched.filter((m) => !m.code).length;
-  const willAdd = R.users.filter((u) => u.code && !u.skipped && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).length;
-  // group issues by rule; phone rules share one group with an inline editor
+  const willAdd = R.users.filter((u) => u.code && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).length;
   const groups = new Map();
   for (const i of R.issues) { const rule = PHONE_RULES.includes(i.rule) ? 'Phone numbers' : i.rule; if (!groups.has(rule)) groups.set(rule, { rule, sev: i.severity, list: [] }); const g = groups.get(rule); g.list.push(i); if (i.severity === 'error') g.sev = 'error'; }
   const all = Array.from(groups.values()).sort((a, b) => (a.sev === b.sev ? a.rule.localeCompare(b.rule) : a.sev === 'error' ? -1 : 1));
@@ -1505,70 +1536,194 @@ function viewExport() {
     tmap.length ? `${fmt(filled)} of ${fmt(rows)} ${esc(S.tree.levelLabels[leaf])} rows get targets` : null,
     S.cfg.userSheet ? `${fmt(willAdd)} of ${plural(R.users.length, 'user')} will be added` : null,
   ].filter(Boolean);
+  // row → messages, for the status column in every grid
+  S._rowMsgs = new Map();
+  for (const i of R.issues) for (const ref of [i.ref].concat(i.refs || []).filter(Boolean)) { if (!S._rowMsgs.has(ref)) S._rowMsgs.set(ref, []); S._rowMsgs.get(ref).push(shortMsg(i)); }
   const lifted = S.cfg.liftSingle ? `<div class="fact"><span class="mark ok">✓</span><div class="t">Each ${esc(S.tree.levelLabels[leaf - 1] || 'parent')} total is spread evenly across its ${esc(S.tree.levelLabels[leaf])} rows
     <div class="d">${plural(R.agg.lifted, 'total')} spread. <button type="button" class="quiet" data-act="unspread">Undo</button></div></div></div>` : '';
-  const touched = R.users.filter((u) => u.edited || u.skipped);
-  const phoneFixed = touched.length && !groups.has('Phone numbers') ? `<div class="fact"><span class="mark ok">✓</span><div class="t">Phone numbers fixed
-    <div class="d">${plural(touched.filter((u) => u.edited && !u.skipped).length, 'number')} corrected · ${plural(touched.filter((u) => u.skipped).length, 'user')} left out</div>
-    <div class="choices" style="margin-top:6px;gap:2px"><button type="button" class="quiet" data-toggle="phones">${S.open.phones ? 'Hide' : 'Edit'}</button></div>${S.open.phones ? phoneEditor([]) : ''}</div></div>` : '';
+  const E = S.edits;
+  const editsBox = E.log.length ? `<div class="fact"><span class="mark ok">✓</span><div class="t">${plural(E.log.length, 'edit')} to the microplan
+    <div class="choices" style="margin-top:4px;gap:2px"><button type="button" class="quiet" data-toggle="__edits">${S.open.__edits ? 'Hide' : 'Show'}</button><button type="button" class="quiet" id="dlCorrected">Download corrected microplan</button></div>
+    ${S.open.__edits ? `<ul class="small" style="margin:6px 0 0;padding-left:18px">${E.log.slice().reverse().map((e) => `<li>${esc(e.desc)} <button type="button" class="quiet" data-undoedit="${e.id}">Undo</button></li>`).join('')}</ul>` : ''}</div></div>` : '';
   return `<div class="intro"><h2>${headline}</h2><p class="muted small">${lines.join(' · ')}</p></div>
-    ${active.length || lifted || phoneFixed ? `<div class="facts">${lifted}${phoneFixed}${active.map(issueGroup).join('')}</div>` : ''}
+    ${active.length || lifted || editsBox ? `<div class="facts">${editsBox}${lifted}${active.map(issueGroup).join('')}</div>` : ''}
     ${acked.length ? `<details class="edit"><summary>${plural(acked.length, 'check')} marked as OK</summary><div class="facts">${acked.map((g) => `<div class="fact"><span class="mark ok">✓</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span><div class="d"><button type="button" class="quiet" data-unack="${esc(g.rule)}">Undo</button></div></div></div>`).join('')}</div></details>` : ''}
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="button" class="primary" id="btnFill">Download filled template</button>
       <button type="button" class="quiet" id="btnReport">Download report</button>
     </div>
     <div class="status" id="expStatus" role="status">${esc(S.exportMsg)}</div>
-    <p class="muted small">Only target cells and new user rows are written. The template's hidden sheets and dropdowns are kept, and unmatched rows are left out.</p>
+    <p class="muted small">Edits change this run and the corrected microplan, never your original file. Only target cells and new user rows are written to the template.</p>
     ${nav(3)}`;
 }
-const ACTION_HINT = {
-  'HF without OIC': 'Add them to the user list and reload it, or mark as OK if these facilities are not active this round.',
-  'HF without CDD': 'Add them to the user list and reload it, or mark as OK if these facilities are not active this round.',
-  'Near-duplicate names': 'These resolved to boundaries in Resolve names. Check the choice there.',
-  'Special characters': 'Only matters if these names create new boundaries; matched names are written by code.',
-  'Duplicate rows': 'Two rows point at the same boundary and were added together. Correct the microplan if that is wrong.',
-  'Targets at two levels': 'A facility and its communities both carry targets, so totals double count. Remove one level in the microplan and reload it.',
-  'Bad number': 'Correct the value in the microplan and reload it.',
-  'Incomplete path': 'A parent level is blank in these rows. Fill it in the microplan and reload it.',
+function shortMsg(i) {
+  if (i.rule === 'Phone') return i.message.split(' — ').pop();
+  if (i.rule === 'Duplicate phone') return 'phone used twice';
+  if (i.rule === 'User boundary') return 'facility not found';
+  if (i.rule === 'Blank name') return 'no name';
+  if (i.rule === 'Bad number') return i.message;
+  if (i.rule === 'Duplicate rows') return 'same boundary as another row';
+  if (i.rule === 'Targets at two levels') return 'targets at two levels';
+  if (i.rule === 'Incomplete path') return 'parent level blank';
+  return i.rule;
+}
+const HINT = {
+  'Phone numbers': 'Correct the number in the row, or remove the person.',
+  'User boundary': 'Fix the facility name so it matches the boundary list, or resolve it in Resolve names.',
+  'Blank name': 'Type the person\'s name, or remove the row.',
+  'Duplicate rows': 'Two rows point at the same boundary and were added together. Fix the name in one, or remove it.',
+  'Targets at two levels': 'Clear the targets on one of the two rows so they are counted once.',
+  'Bad number': 'Correct the value.',
+  'Incomplete path': 'Fill the blank parent level.',
+  'Near-duplicate names': 'Pick one spelling. The change applies to every row that uses the name.',
+  'Special characters': 'Edit the name. The change applies to every row that uses it.',
+  'HF without OIC': 'Add a person for each facility, or mark as OK if they are not active this round.',
+  'HF without CDD': 'Add a person for each facility, or mark as OK if they are not active this round.',
 };
 function issueGroup(g) {
   const sev = g.sev === 'error' ? 'err' : 'warn';
-  const first = g.list[0];
-  const key = g.rule;
+  const key = g.rule; const first = g.list[0];
   let body = '', actions = '';
-  if (g.rule === 'Phone numbers') {
-    actions = `<button type="button" class="quiet" data-toggle="phones">${S.open.phones ? 'Hide' : 'Fix numbers'}</button>`;
-    if (S.open.phones) body = phoneEditor(g.list);
+  const showAll = !!S.open[key];
+  // errors show their rows straight away; warnings open on request so the page stays calm
+  const fixOpen = g.sev === 'error' || !!S.open['fix:' + key];
+  if (!fixOpen && (first.variants || first.codes || g.list.some((i) => i.ref || i.refs))) {
+    actions += `<button type="button" class="quiet" data-toggle="fix:${esc(key)}">${first.codes ? 'Add people' : first.variants ? 'Edit names' : 'Fix rows'}</button>`;
+  } else if (first.variants) {
+    const vs = g.rule === 'Near-duplicate names' ? g.list : [first];
+    body = renameGrid(vs, showAll);
+    const total = vs.reduce((n, i) => n + (g.rule === 'Near-duplicate names' ? 1 : i.variants.length), 0);
+    if (total > ROWS_SHOWN) actions += `<button type="button" class="quiet" data-toggle="${esc(key)}">${showAll ? 'Show fewer' : 'Show all ' + fmt(total)}</button>`;
+  } else if (first.codes) {
+    body = addUserGrid(first.codes, first.need, showAll);
+    if (first.codes.length > ROWS_SHOWN) actions += `<button type="button" class="quiet" data-toggle="${esc(key)}">${showAll ? 'Show fewer' : 'Show all ' + fmt(first.codes.length)}</button>`;
   } else if (g.rule === 'Targets on one child per parent') {
-    actions = `<button type="button" class="quiet" data-act="spread">Spread each total across its ${esc(S.tree.levelLabels[S.tree.depth])} rows</button><button type="button" class="quiet" data-ack="${esc(key)}">Keep as given</button>`;
-  } else if (g.rule === 'User boundary') {
-    actions = `<button type="button" class="quiet" data-nav="3">Resolve in names</button>`;
+    actions += `<button type="button" class="quiet" data-act="spread">Spread each total across its ${esc(S.tree.levelLabels[S.tree.depth])} rows</button>`;
   } else {
-    const items = first.items || (g.list.length > 1 ? g.list.map((i) => i.message + (i.ref ? ' · ' + i.ref : '')) : null);
-    if (items && items.length > 1) actions += `<button type="button" class="quiet" data-toggle="${esc(key)}">${S.open[key] ? 'Hide list' : 'Show all ' + fmt(items.length)}</button>`;
-    if (g.rule === 'Near-duplicate names') actions += `<button type="button" class="quiet" data-nav="3">Open names</button>`;
-    actions += `<button type="button" class="quiet" data-ack="${esc(key)}">Mark as OK</button>`;
-    if (S.open[key] && items) body = `<ul class="small muted" style="margin:6px 0 0;padding-left:18px;max-height:260px;overflow:auto">${items.slice(0, 500).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    const refs = Array.from(new Set(g.list.flatMap((i) => [i.ref].concat(i.refs || [])).filter(Boolean)));
+    if (refs.length) {
+      body = rowGrid(refs, g.rule, showAll);
+      if (refs.length > ROWS_SHOWN) actions += `<button type="button" class="quiet" data-toggle="${esc(key)}">${showAll ? 'Show fewer' : 'Show all ' + fmt(refs.length)}</button>`;
+    }
+    if (g.rule === 'User boundary') actions += `<button type="button" class="quiet" data-nav="3">Open Resolve names</button>`;
   }
-  const hint = ACTION_HINT[g.rule] ? `<div class="d">${esc(ACTION_HINT[g.rule])}</div>` : '';
-  const detail = g.rule === 'Phone numbers' ? `${plural(g.list.length, 'user')} with a missing, invalid or repeated number` : esc(first.message) + (first.ref ? ' · ' + esc(first.ref) : '');
-  return `<div class="fact"><span class="mark ${sev}">!</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span>
-    <div class="d">${detail}</div>${hint}<div class="choices" style="margin-top:6px;gap:2px">${actions}</div>${body}</div></div>`;
+  actions += `<button type="button" class="quiet" data-ack="${esc(key)}">${g.rule === 'Targets on one child per parent' ? 'Keep as given' : g.sev === 'error' ? 'Ignore' : 'Mark as OK'}</button>`;
+  const detail = g.rule === 'Phone numbers' ? `${plural(g.list.length, 'user')} with a missing, invalid or repeated number` : first.codes ? esc(first.message.split(', e.g.')[0]) : first.variants && g.rule === 'Special characters' ? esc(first.message.split(' (e.g.')[0]) : g.list.length > 1 ? '' : esc(first.message);
+  return `<div class="fact"><span class="mark ${sev}">!</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length > 1 ? g.list.length : (first.codes || first.variants || [0]).length)}</span>
+    ${detail ? `<div class="d">${detail}</div>` : ''}${HINT[g.rule] ? `<div class="d">${esc(HINT[g.rule])}</div>` : ''}
+    ${body}<div class="choices" style="margin-top:6px;gap:2px">${actions}</div></div></div>`;
 }
-function phoneEditor(list) {
-  const refs = new Set();
-  for (const i of list) { if (i.ref) refs.add(i.ref); (i.refs || []).forEach((r) => refs.add(r)); }
-  S.res.users.forEach((u) => { if (u.skipped || u.edited) refs.add(u.ref); });
-  const users = S.res.users.filter((u) => refs.has(u.ref));
-  return `<div class="tbl" style="margin-top:10px"><table><thead><tr><th>User</th><th>Phone</th><th></th><th>Leave out</th></tr></thead><tbody>
-    ${users.map((u) => { const dup = list.some((i) => i.rule === 'Duplicate phone' && (i.refs || []).includes(u.ref));
-      const state = u.skipped ? '<span class="muted">left out</span>' : !u.phoneNorm.ok ? `<span style="color:var(--err)">${esc(u.phoneNorm.reason)}</span>` : dup ? '<span style="color:var(--err)">used twice</span>' : '<span style="color:var(--ok)">ok</span>';
-      return `<tr><td>${esc(u.person.name || '(no name)')}<div class="sub">${esc(u.code ? S.tree.nodes.get(u.code).name : (u.path || []).map((p) => p.name).slice(-1)[0] || '')} · ${esc(u.ref)}</div></td>
-        <td><input type="text" inputmode="tel" data-uphone="${esc(u.ref)}" value="${esc(u.person.phone)}" aria-label="Phone for ${esc(u.person.name)}" style="min-width:140px"${u.skipped ? ' disabled' : ''}></td>
-        <td class="small">${state}</td>
-        <td><input type="checkbox" data-uskip="${esc(u.ref)}"${u.skipped ? ' checked' : ''} aria-label="Leave out ${esc(u.person.name)}"></td></tr>`; }).join('')}
-    </tbody></table></div><p class="small muted" style="margin-top:6px">Edits apply to the exported template only. Correct the source list too, so the next cycle starts clean.</p>`;
+/** Columns shown for a row: boundary path + values, or facility + person fields for user rows. */
+function gridCols(sheet, rule) {
+  const a = A(sheet); if (!a) return [];
+  const label = (c) => (a.cols[c] || {}).label || MP.colLetter(c);
+  if (sheet === S.cfg.userSheet) {
+    const lm = S.cfg.userLevelMap; const hcols = Object.keys(lm).map(Number).sort((x, y) => lm[x] - lm[y]);
+    const hs = rule === 'User boundary' ? hcols.slice(-3) : hcols.slice(-1);
+    return hs.map((c) => ({ c, label: label(c), kind: 'h' })).concat(['name', 'phone', 'role'].filter((k) => S.cfg.person[k] !== '' && S.cfg.person[k] != null).map((k) => ({ c: Number(S.cfg.person[k]), label: label(Number(S.cfg.person[k])), kind: k === 'phone' ? 'p' : 'v' })));
+  }
+  const lm = sheet === S.cfg.sheet ? S.cfg.levelMap : remapByLabel(a, A(S.cfg.sheet), S.cfg.levelMap);
+  const hcols = Object.keys(lm).map(Number).sort((x, y) => lm[x] - lm[y]);
+  const vals = Array.from(new Set(Object.values(S.cfg.targetMap).filter((v) => v !== '' && v != null).map(Number)));
+  return hcols.slice(-3).map((c) => ({ c, label: label(c), kind: 'h' })).concat(sheet === S.cfg.sheet ? vals.map((c) => ({ c, label: label(c), kind: 'n' })) : []);
+}
+function rowGrid(refs, rule, showAll) {
+  const shown = showAll ? refs : refs.slice(0, ROWS_SHOWN);
+  const bySheet = new Map(); for (const r of shown) { const { sheet } = parseRef(r); if (!bySheet.has(sheet)) bySheet.set(sheet, []); bySheet.get(sheet).push(r); }
+  let h = '';
+  for (const [sheet, rs] of bySheet) {
+    const cols = gridCols(sheet, rule);
+    h += `<div class="tbl" style="margin-top:8px"><table class="grid"><thead><tr><th>Row</th>${cols.map((c) => `<th>${esc(c.label)}</th>`).join('')}<th>Problem</th><th></th></tr></thead><tbody>
+      ${rs.map((ref) => { const { ri } = parseRef(ref);
+        return `<tr><td class="mono muted">${esc(ref)}</td>${cols.map((c) => `<td><input type="text" data-cell="${esc(sheet)}|${ri}|${c.c}|${c.kind}" value="${esc(cellAt(sheet, ri, c.c))}" aria-label="${esc(c.label)}, ${esc(ref)}"${c.kind === 'n' ? ' inputmode="numeric" style="width:90px"' : c.kind === 'p' ? ' inputmode="tel" style="width:130px"' : ''}></td>`).join('')}
+          <td class="small" style="color:var(--err)">${esc((S._rowMsgs.get(ref) || []).join('; '))}</td><td><button type="button" class="quiet" data-rm="${esc(ref)}">Remove</button></td></tr>`; }).join('')}
+      </tbody></table></div>`;
+  }
+  if (refs.some((r) => gridCols(parseRef(r).sheet, rule).some((c) => c.kind === 'h'))) h += `<p class="small muted" style="margin-top:4px">Renaming a boundary changes it in every row that uses it.</p>`;
+  return h;
+}
+function renameGrid(issues, showAll) {
+  const vs = issues.flatMap((i) => i.variants.map((v, k) => Object.assign({}, v, { group: issues.indexOf(i), first: k === 0, size: i.variants.length })));
+  const shown = showAll ? vs : vs.slice(0, ROWS_SHOWN);
+  return `<div class="tbl" style="margin-top:8px"><table class="grid"><thead><tr><th>Level</th><th>Name</th><th class="num">Rows</th><th>Under</th></tr></thead><tbody>
+    ${shown.map((v) => { const { sheet, ri } = parseRef(v.ref); const col = levelCol(sheet, v.level); const under = parentPath(sheet, ri, v.level);
+      return `<tr${v.first && v.group > 0 ? ' style="border-top:2px solid var(--line)"' : ''}><td class="small muted">${esc(S.tree.levelLabels[v.level])}</td>
+        <td>${col == null ? esc(v.name) : `<input type="text" data-cell="${esc(sheet)}|${ri}|${col}|h" value="${esc(v.name)}" aria-label="Name ${esc(v.name)}">`}</td>
+        <td class="num">${fmt(v.count)}</td><td class="small muted">${esc(under)}</td></tr>`; }).join('')}
+    </tbody></table></div>`;
+}
+function levelCol(sheet, level) {
+  const lm = sheet === S.cfg.userSheet ? S.cfg.userLevelMap : sheet === S.cfg.sheet ? S.cfg.levelMap : remapByLabel(A(sheet), A(S.cfg.sheet), S.cfg.levelMap);
+  const hit = Object.entries(lm).find(([, l]) => l === level); return hit ? Number(hit[0]) : null;
+}
+function parentPath(sheet, ri, level) {
+  const lm = sheet === S.cfg.userSheet ? S.cfg.userLevelMap : sheet === S.cfg.sheet ? S.cfg.levelMap : remapByLabel(A(sheet), A(S.cfg.sheet), S.cfg.levelMap);
+  return Object.entries(lm).filter(([, l]) => l < level && l > 0).sort((a, b) => a[1] - b[1]).map(([c]) => cellAt(sheet, ri, Number(c))).filter(Boolean).slice(-2).join(' › ');
+}
+function addUserGrid(codes, need, showAll) {
+  if (!S.cfg.userSheet) return '';
+  const shown = showAll ? codes : codes.slice(0, ROWS_SHOWN);
+  const roleName = needRole(need).role;
+  return `<div class="tbl" style="margin-top:8px"><table class="grid"><thead><tr><th>Facility</th><th>Name</th><th>Phone</th><th></th></tr></thead><tbody>
+    ${shown.map((code) => { const n = S.tree.nodes.get(code); const id = 'add-' + need + '-' + code.replace(/[^A-Za-z0-9_-]/g, '');
+      return `<tr><td>${esc(n.name)}<div class="sub">${esc(n.path.slice(-2, -1)[0] || '')}</div></td>
+        <td><input type="text" id="${id}-n" placeholder="Full name" aria-label="Name for ${esc(n.name)}"></td>
+        <td><input type="text" id="${id}-p" placeholder="080…" inputmode="tel" style="width:130px" aria-label="Phone for ${esc(n.name)}"></td>
+        <td><button type="button" class="quiet" data-add="${esc(code)}|${need}|${id}">Add ${esc(roleName || (need === 'oic' ? 'OIC' : 'CDD'))}</button></td></tr>`; }).join('')}
+    </tbody></table></div>`;
+}
+/** Designation to write for a needed role kind, reusing one already in the user list when possible. */
+function needRole(need) {
+  const hit = Object.entries(S.cfg.roleMap).find(([, r]) => MPW.roleKind(r) === need);
+  if (hit) return { designation: hit[0], role: hit[1] };
+  const designation = need === 'oic' ? 'OIC' : 'CDD';
+  return { designation, role: MPW.guessRole(designation, S.facts.roleOptions) || designation };
+}
+
+// ───────── edits ─────────
+function logEdit(entry) { entry.id = ++S.edits.seq; S.edits.log.push(entry); applyEdits(); S.exportMsg = ''; run(); render(); }
+function editCell(sheet, ri, col, kind, value) {
+  const E = S.edits; const old = cellAt(sheet, ri, col); value = value.trim();
+  if (value === old) return;
+  const targets = [ri];
+  if (kind === 'h') {
+    // rename the boundary in every row of this sheet with the same parents and the same name
+    const lm = sheet === S.cfg.userSheet ? S.cfg.userLevelMap : sheet === S.cfg.sheet ? S.cfg.levelMap : remapByLabel(A(sheet), A(S.cfg.sheet), S.cfg.levelMap);
+    const lvl = lm[col]; const parents = Object.entries(lm).filter(([, l]) => l < lvl).map(([c]) => Number(c));
+    const sh = S.mpSheets.find((x) => x.name === sheet);
+    sh.rows.forEach((r, i) => { if (i !== ri && MP.cellStr((r || [])[col]) === old && parents.every((c) => MP.cellStr((r || [])[c]) === cellAt(sheet, ri, c))) targets.push(i); });
+  }
+  const cells = targets.map((i) => { const k = sheet + '|' + i; const prev = E.patches[k] && Object.prototype.hasOwnProperty.call(E.patches[k], col) ? E.patches[k][col] : undefined; (E.patches[k] = E.patches[k] || {})[col] = value; return { k, col, prev }; });
+  const lab = (A(sheet).cols[col] || {}).label || MP.colLetter(col);
+  logEdit({ type: 'cell', cells, desc: targets.length > 1 ? `Renamed “${old}” to “${value}” in ${targets.length} rows (${lab})` : `${sheet}!${ri + 1} ${lab}: “${old}” → “${value}”` });
+}
+function removeRow(ref) { S.edits.removed.add(ref); logEdit({ type: 'remove', ref, desc: `Removed ${ref}` }); }
+function addUser(code, need, name, phone) {
+  const sheet = S.cfg.userSheet; const node = S.tree.nodes.get(code); const { designation, role } = needRole(need);
+  if (!S.cfg.roleMap[designation]) S.cfg.roleMap[designation] = role;
+  const orig = S.mpOrig.find((x) => x.name === sheet); const a = A(sheet);
+  const width = Math.max(...a.cols.map((c) => c.c)) + 1; const row = new Array(width).fill('');
+  for (const [c, lvl] of Object.entries(S.cfg.userLevelMap)) if (lvl <= node.level) row[Number(c)] = node.path[lvl];
+  row[S.cfg.person.name] = name; row[S.cfg.person.phone] = phone; if (S.cfg.person.role !== '' && S.cfg.person.role != null) row[S.cfg.person.role] = designation;
+  const list = S.edits.added[sheet] = S.edits.added[sheet] || [];
+  list.push(row);
+  const ref = sheet + '!' + (orig.rows.length + list.length);
+  logEdit({ type: 'add', ref, desc: `Added ${designation} “${name}” at ${node.name}` });
+}
+function undoEdit(id) {
+  const E = S.edits; const e = E.log.find((x) => x.id === id); if (!e) return;
+  if (e.type === 'cell') for (const { k, col, prev } of e.cells) { if (prev === undefined) { delete E.patches[k][col]; if (!Object.keys(E.patches[k]).length) delete E.patches[k]; } else E.patches[k][col] = prev; }
+  if (e.type === 'remove') E.removed.delete(e.ref);
+  if (e.type === 'add') E.removed.add(e.ref);
+  E.log = E.log.filter((x) => x !== e); applyEdits(); S.exportMsg = ''; run(); render();
+}
+function saveCorrected() {
+  const wb = XLSX.utils.book_new();
+  for (const sh of S.mpSheets) {
+    const rows = sh.rows.filter((r, ri) => !S.edits.removed.has(sh.name + '!' + (ri + 1)));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows.map((r) => (r || []).map((v) => (v === '' ? null : v)))), sh.name.slice(0, 31));
+  }
+  saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_corrected.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
 }
 
 // ───────── events ─────────
@@ -1587,6 +1742,14 @@ view.addEventListener('click', async (e) => {
   if (t.dataset.toggle !== undefined) { S.open[t.dataset.toggle] = !S.open[t.dataset.toggle]; render(); return; }
   if (t.dataset.act === 'spread') { S.cfg.liftSingle = true; S.cfg.splitMode = 'even'; S.exportMsg = ''; run(); render(); toast('Totals spread evenly'); return; }
   if (t.dataset.act === 'unspread') { S.cfg.liftSingle = false; S.cfg.splitMode = 'flag'; S.exportMsg = ''; run(); render(); return; }
+  if (t.dataset.rm !== undefined) { removeRow(t.dataset.rm); return; }
+  if (t.dataset.undoedit !== undefined) { undoEdit(Number(t.dataset.undoedit)); return; }
+  if (t.id === 'dlCorrected') { saveCorrected(); return; }
+  if (t.dataset.add !== undefined) {
+    const [code, need, id] = t.dataset.add.split('|'); const name = $(id + '-n').value.trim(), phone = $(id + '-p').value.trim();
+    if (!name) { $(id + '-n').focus(); toast('Type a name first'); return; }
+    addUser(code, need, name, phone); return;
+  }
   if (t.id === 'dFill') { demoFill(t); return; }
   if (t.id === 'dList') { demoCsv(); return; }
   if (t.id === 'btnFill') { fillAndSave(t); return; }
@@ -1621,13 +1784,8 @@ view.addEventListener('change', async (e) => {
     if (t.value) decide(d, t.value);
     return;
   }
-  // user fixes on the export step
-  if (t.dataset.uphone !== undefined || t.dataset.uskip !== undefined) {
-    const ref = t.dataset.uphone ?? t.dataset.uskip;
-    const ed = S.userEdits[ref] = S.userEdits[ref] || {};
-    if (t.dataset.uphone !== undefined) ed.phone = t.value.trim(); else ed.skip = t.checked;
-    S.exportMsg = ''; run(); render(); return;
-  }
+  // row edits on the export step
+  if (t.dataset.cell !== undefined) { const [sheet, ri, col, kind] = t.dataset.cell.split('|'); editCell(sheet, Number(ri), Number(col), kind, t.value); return; }
   // demo settings
   if (S.mode === 'demo' && S.demo) {
     const D = S.demo; const n = (v) => Math.max(0, Math.min(50, parseInt(v, 10) || 0));
@@ -1670,7 +1828,7 @@ async function fillAndSave(btn) {
   try {
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(S.tplBuf.slice(0));
     const R = S.res;
-    const users = R.users.filter((u) => u.code && !u.skipped && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
+    const users = R.users.filter((u) => u.code && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
     const targetMap = Object.fromEntries(Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null));
     const log = await MPW.fillTemplate(wb, { tree: S.tree, agg: R.agg, targetMap, splitMode: S.cfg.splitMode, users, employmentType: S.cfg.empType });
     const buf = await wb.xlsx.writeBuffer();
@@ -1701,15 +1859,16 @@ function saveReport() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(miss), 'No target');
   }
   if (R.users.length) {
-    const u = [['Sheet', 'Row', 'Name', 'Phone (as given)', 'Phone (written)', 'Phone check', 'Left out', 'Designation', 'Role', 'Boundary code', 'Facility path']];
-    for (const x of R.users) u.push([x.sheet, x.row, x.person.name, x.givenPhone, x.phoneNorm.ok ? x.phoneNorm.value : '', x.phoneNorm.ok ? 'ok' : x.phoneNorm.reason, x.skipped ? 'yes' : '', x.person.role, x.role, x.code || '', x.code ? T.nodes.get(x.code).path.join(' > ') : (x.path || []).map((p) => p.name).join(' > ') + ' (not matched)']);
+    const u = [['Sheet', 'Row', 'Name', 'Phone (in microplan)', 'Phone (written)', 'Phone check', 'Designation', 'Role', 'Boundary code', 'Facility path']];
+    for (const x of R.users) u.push([x.sheet, x.row, x.person.name, x.person.phone, x.phoneNorm.ok ? x.phoneNorm.value : '', x.phoneNorm.ok ? 'ok' : x.phoneNorm.reason, x.person.role, x.role, x.code || '', x.code ? T.nodes.get(x.code).path.join(' > ') : (x.path || []).map((p) => p.name).join(' > ') + ' (not matched)']);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(u), 'Users');
   }
+  if (S.edits.log.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['#', 'Edit']].concat(S.edits.log.map((e) => [e.id, e.desc]))), 'Edits');
   saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_match_report.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
 }
 
 function clearAll() {
-  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', userEdits: {}, acks: new Set(), open: {} });
+  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {} });
   S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true };
 }
 
