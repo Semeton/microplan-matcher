@@ -687,7 +687,69 @@
     return bs >= 1 ? best : null;
   }
 
-  root.MP = { autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
+  // ───────────────────────── demo users ─────────────────────────
+  /** Level a console role normally sits at, as a template level index. */
+  function defaultRoleLevel(tree, role) {
+    const r = basicNorm(role);
+    const kinds = tree.levelLabels.map((l, i) => hierKind(l) || (i === 0 ? 'country' : null));
+    const find = (...ks) => { for (const k of ks) { const i = kinds.indexOf(k); if (i >= 0) return i; } return -1; };
+    let lvl = -1;
+    if (/national|country/.test(r)) lvl = 0;
+    else if (/state|province|provincial/.test(r)) lvl = find('state');
+    else if (/district|lga|county/.test(r)) lvl = find('lga');
+    else if (/warehouse|store|logistic/.test(r)) lvl = find('lga', 'state');
+    else if (/field supervisor|monitor|ward/.test(r)) lvl = find('ward', 'chiefdom', 'lga');
+    else if (/facility|hf|oic|in charge/.test(r)) lvl = find('hf');
+    else if (/distributor|dispenser|registrar|cdd|vaccinator|mobili/.test(r)) lvl = find('hf', 'dp', 'community');
+    if (lvl < 0) lvl = find('hf');
+    if (lvl < 0) lvl = Math.min(tree.depth, 4);
+    return lvl;
+  }
+
+  /** Boundaries at a level, spread evenly across the sorted hierarchy (so picks land in different branches). */
+  function spreadPick(tree, level, count) {
+    const all = Array.from(tree.nodes.values()).filter((n) => n.level === level && !n.synthetic)
+      .sort((a, b) => a.path.join('#').localeCompare(b.path.join('#')));
+    if (!all.length || count <= 0) return [];
+    if (count >= all.length) return all;
+    const out = [];
+    for (let i = 0; i < count; i++) out.push(all[Math.floor((i * all.length) / count + all.length / (2 * count))]);
+    return out;
+  }
+
+  function nextPhone(start, i) {
+    const digits = String(start || '').replace(/\D/g, '');
+    if (!digits) return '';
+    const n = (BigInt(digits) + BigInt(i)).toString();
+    return n.padStart(digits.length, '0');
+  }
+
+  /**
+   * Generate demo users.
+   * plan = { roles: [{ role, level, count }], allRoles: { level, count } | null, phoneStart, prefix }
+   * Returns [{ code, name, phone, roles: [..], path }]
+   */
+  function demoUsers(tree, plan) {
+    const out = [];
+    const prefix = (plan.prefix || 'Demo').trim();
+    const short = (role) => role.replace(/\s+/g, ' ').trim();
+    for (const r of plan.roles || []) {
+      if (!r.role || !(r.count > 0)) continue;
+      spreadPick(tree, Number(r.level), Number(r.count)).forEach((n, i) => {
+        out.push({ code: n.code, roles: [r.role], path: n.path, name: `${prefix} ${short(r.role)} ${String(i + 1).padStart(2, '0')}` });
+      });
+    }
+    if (plan.allRoles && plan.allRoles.count > 0) {
+      const roles = (plan.roles || []).filter((r) => r.role && r.include !== false).map((r) => r.role);
+      spreadPick(tree, Number(plan.allRoles.level), Number(plan.allRoles.count)).forEach((n, i) => {
+        out.push({ code: n.code, roles, path: n.path, name: `${prefix} All Roles ${String(i + 1).padStart(2, '0')}` });
+      });
+    }
+    out.forEach((u, i) => { u.phone = nextPhone(plan.phoneStart, i); });
+    return out;
+  }
+
+  root.MP = { defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
     valueFor, normPhone, validate, label, helpersFor, sha256hex, colLetter, aliasKey, hierKind, cellStr, toNum };
   if (typeof module !== 'undefined') module.exports = root.MP;
 })(typeof window !== 'undefined' ? window : globalThis);

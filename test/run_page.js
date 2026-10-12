@@ -47,6 +47,15 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
   click('#btnFill'); await until(() => saved.some((s) => s.filename.endsWith('_filled.xlsx')));
   console.log('   ', txt(d.getElementById('expStatus')));
   click('#btnReport'); await until(() => saved.some((s) => s.filename.endsWith('_report.xlsx')));
+  // demo users mode
+  click('[data-mode="demo"]'); await wait(100);
+  console.log('[demo]', d.querySelectorAll('.demo-table tbody tr').length, 'role rows |', txt(d.querySelector('.facts .t')).slice(0, 160));
+  const cnt = d.querySelector('[data-dcnt="0"]'); cnt.value = '3'; cnt.dispatchEvent(new w.Event('change', { bubbles: true })); await wait(50);
+  console.log('   after count=3 for first role:', txt(d.querySelector('.facts .t')).split('—')[0]);
+  click('#dFill'); await until(() => saved.some((s) => s.filename.endsWith('_demo_users.xlsx')));
+  console.log('   ', txt(d.getElementById('demoStatus')));
+  click('#dList'); await until(() => saved.some((s) => s.filename.endsWith('_demo_users.csv')));
+  click('[data-mode="plan"]'); await wait(50);
   click('#steps [data-go="1"]'); click('#clearEx'); await wait(100);
   console.log('[clear] continue disabled:', d.querySelector('[data-nav="2"]').disabled, '| try example link:', !!d.getElementById('loadEx'));
   for (const s of saved) {

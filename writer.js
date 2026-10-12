@@ -131,7 +131,10 @@
           row.getCell(hm.HCM_ADMIN_CONSOLE_BOUNDARY_CODE).value = u.code;
           row.getCell(hm.HCM_ADMIN_CONSOLE_USER_NAME).value = u.name;
           if (hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER) row.getCell(hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER).value = u.phone;
-          if (hm.HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_1 && u.role) row.getCell(hm.HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_1).value = u.role;
+          const roles = (u.roles && u.roles.length ? u.roles : [u.role]).filter(Boolean);
+          const roleKeys = Object.keys(hm).filter((k) => /^HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_\d+$/.test(k)).sort((a, b) => hm[a] - hm[b]);
+          roles.slice(0, roleKeys.length).forEach((r, i) => { row.getCell(hm[roleKeys[i]]).value = r; });
+          if (roles.length > roleKeys.length) log.roleOverflow = (log.roleOverflow || 0) + 1;
           if (hm.HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE && plan.employmentType) row.getCell(hm.HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE).value = plan.employmentType;
           if (hm.HCM_ADMIN_CONSOLE_USER_USAGE) row.getCell(hm.HCM_ADMIN_CONSOLE_USER_USAGE).value = 'Active';
           row.commit && row.commit();

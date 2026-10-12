@@ -7,6 +7,8 @@ Turns a campaign microplan into a filled DIGIT HCM unified template, entirely in
 3. **Resolve names** – each distinct boundary name is matched level by level against the template's boundary codes. Only names that need a person are shown; choices are remembered in the browser and can be exported/imported as JSON for the next cycle.
 4. **Export** – pre-ingestion checks, then the filled template (targets + user rows, with the console's hidden sheets, dropdowns and helper columns preserved) and a match report.
 
+**Demo users** (header switch) needs only the template: pick roles, the boundary level each role sits at and how many, and it writes clearly-labelled test users spread across different branches of the hierarchy — plus optional users holding every role — with sequential phone numbers, and a CSV list for the demo team.
+
 Nothing is uploaded: files are parsed client-side with SheetJS and ExcelJS.
 
 ## How it works
