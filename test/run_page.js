@@ -44,6 +44,19 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
   click('[data-nav="4"]');
   console.log('[4 Export]', txt(d.querySelector('.intro')));
   console.log('   checks:', [...d.querySelectorAll('.facts .fact .t')].map((t) => t.childNodes[0].textContent.trim()).join(' | '));
+  // resolve problems in place
+  const fire = (el, v) => { if (v !== undefined) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } el.dispatchEvent(new w.Event('change', { bubbles: true })); };
+  click('[data-toggle="phones"]');
+  console.log('   phone editor rows:', [...d.querySelectorAll('[data-uphone]')].map((i) => i.dataset.uphone + '=' + i.value).join(', '));
+  fire(d.querySelector('[data-uphone="UserList!4"]'), '08123456790');
+  fire(d.querySelector('[data-uskip="UserList!6"]'), true);
+  console.log('   after phone fixes:', txt(d.querySelector('.intro')), '| phone states:', [...d.querySelectorAll('[data-uphone]')].map((i) => i.closest('tr').cells[2].textContent).join(','));
+  click('[data-act="spread"]');
+  console.log('   after spread:', txt(d.querySelector('.intro p')));
+  for (const r of ['HF without CDD', 'HF without OIC', 'Near-duplicate names', 'Special characters']) { const b = d.querySelector(`[data-ack="${r}"]`); if (b) b.click(); }
+  console.log('   after marking OK:', txt(d.querySelector('.intro h2')), '|', txt(d.querySelector('details.edit summary')));
+  const fails = []; if (!/Ready/.test(txt(d.querySelector('.intro h2')))) fails.push('headline not ready');
+  if (fails.length) { console.error('FAIL', fails); process.exit(1); }
   click('#btnFill'); await until(() => saved.some((s) => s.filename.endsWith('_filled.xlsx')));
   console.log('   ', txt(d.getElementById('expStatus')));
   click('#btnReport'); await until(() => saved.some((s) => s.filename.endsWith('_report.xlsx')));

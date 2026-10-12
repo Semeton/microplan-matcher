@@ -443,8 +443,9 @@
 
   // ───────────────────────── aggregation ─────────────────────────
   /** Sum values per matched node and roll up to ancestors. Returns {direct, rolled, levelsWithValues}. */
-  function aggregate(tree, matched, valueCols) {
+  function aggregate(tree, matched, valueCols, opts) {
     const direct = new Map();
+    opts = opts || {};
     const conflicts = [];
     const seen = new Map();
     for (const m of matched) {
@@ -457,6 +458,17 @@
       const cur = direct.get(m.code) || {};
       for (const c of valueCols) { const v = m.values[c]; if (v !== undefined && v !== null) cur[c] = (cur[c] || 0) + v; }
       direct.set(m.code, cur);
+    }
+    // Optional: treat a value that sits on the only valued child of a parent as the parent's total
+    // (MC master-data convention), so split rules can spread it across all the parent's children.
+    let lifted = 0;
+    if (opts.liftSingle) {
+      const byParent = new Map();
+      for (const code of direct.keys()) { const n = tree.nodes.get(code); if (n && n.parent) { if (!byParent.has(n.parent)) byParent.set(n.parent, []); byParent.get(n.parent).push(code); } }
+      for (const [p, kids] of byParent) {
+        const par = tree.nodes.get(p);
+        if (kids.length === 1 && par.children.length > 1 && !direct.has(p)) { direct.set(p, direct.get(kids[0])); direct.delete(kids[0]); lifted++; }
+      }
     }
     const rolled = new Map();
     for (const [code, vals] of direct) {
@@ -475,7 +487,7 @@
       while (n) { if (direct.has(n.code)) { twoLevel.push({ child: code, ancestor: n.code }); break; } n = n.parent ? tree.nodes.get(n.parent) : null; }
     }
     const levels = new Set(Array.from(direct.keys()).map((c) => tree.nodes.get(c).level));
-    return { direct, rolled, conflicts, twoLevel, levelsWithValues: Array.from(levels).sort() };
+    return { direct, rolled, conflicts, twoLevel, lifted, levelsWithValues: Array.from(levels).sort() };
   }
 
   /** Value for a template row at `code`: own/rolled-up value, or a split of the parent's value if
@@ -544,7 +556,7 @@
     if (specialCharsCheck) {
       const bad = new Set();
       for (const m of matched) for (const p of m.path || []) if (/[^A-Za-z0-9 \-\/().,'&]/.test(p.name)) bad.add(p.name);
-      if (bad.size) add('warn', 'Special characters', bad.size + ' boundary names contain special characters (e.g. ' + Array.from(bad).slice(0, 5).map((x) => '"' + x + '"').join(', ') + ')');
+      if (bad.size) { add('warn', 'Special characters', bad.size + ' boundary names contain special characters (e.g. ' + Array.from(bad).slice(0, 3).map((x) => '"' + x + '"').join(', ') + ')'); issues[issues.length - 1].items = Array.from(bad).sort(); }
     }
 
     if (agg) {
@@ -575,17 +587,17 @@
         const ref = u.sheet + '!' + u.row;
         if (!u.person.name) add('error', 'Blank name', 'User row without a name', ref);
         if (!u.phoneNorm.ok) add('error', 'Phone', (u.person.phone || '(blank)') + ' — ' + u.phoneNorm.reason, ref);
-        else { const p = u.phoneNorm.value; if (phones.has(p)) add('error', 'Duplicate phone', p + ' also used at ' + phones.get(p), ref); else phones.set(p, ref); }
+        else { const p = u.phoneNorm.value; if (phones.has(p)) { add('error', 'Duplicate phone', p + ' also used at ' + phones.get(p), ref); issues[issues.length - 1].refs = [phones.get(p), ref]; } else phones.set(p, ref); }
         if (!u.code) add('error', 'User boundary', 'User boundary not matched: ' + (u.path || []).map((p) => p.name).join(' › '), ref);
         if (u.code && u.roleKind) { const k = u.code; if (!perHF.has(k)) perHF.set(k, { oic: 0, cdd: 0 }); perHF.get(k)[u.roleKind]++; }
       }
       for (const [code, cnt] of perHF) if (cnt.oic > 1) add('warn', 'Duplicate OIC', label(tree, code) + ' has ' + cnt.oic + ' OIC / HF workers — the platform keeps only the first');
       if (ctx.hfLevel !== undefined && ctx.hfLevel !== null) {
         const hfs = new Set(); for (const m of matched) if (m.code) { let n = tree.nodes.get(m.code); while (n && n.level > ctx.hfLevel) n = tree.nodes.get(n.parent); if (n && n.level === ctx.hfLevel) hfs.add(n.code); }
-        let noOic = 0, noCdd = 0; const exO = [], exC = [];
-        for (const hf of hfs) { const cnt = perHF.get(hf) || { oic: 0, cdd: 0 }; if (!cnt.oic) { noOic++; if (exO.length < 6) exO.push(label(tree, hf)); } if (!cnt.cdd) { noCdd++; if (exC.length < 6) exC.push(label(tree, hf)); } }
-        if (noOic) add('warn', 'HF without OIC', noOic + ' facilities have no OIC / HF worker, e.g. ' + exO.join('; '));
-        if (noCdd) add('warn', 'HF without CDD', noCdd + ' facilities have no distributor, e.g. ' + exC.join('; '));
+        const exO = [], exC = [];
+        for (const hf of hfs) { const cnt = perHF.get(hf) || { oic: 0, cdd: 0 }; if (!cnt.oic) exO.push(label(tree, hf)); if (!cnt.cdd) exC.push(label(tree, hf)); }
+        if (exO.length) { add('warn', 'HF without OIC', exO.length + ' facilities have no OIC / HF worker, e.g. ' + exO.slice(0, 3).join('; ')); issues[issues.length - 1].items = exO.sort(); }
+        if (exC.length) { add('warn', 'HF without CDD', exC.length + ' facilities have no distributor, e.g. ' + exC.slice(0, 3).join('; ')); issues[issues.length - 1].items = exC.sort(); }
       }
     }
     return issues;
