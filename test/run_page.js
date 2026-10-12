@@ -44,7 +44,7 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
     sb.click(); await wait(50);
     const inp = d.querySelector('[data-qsearch]'); const optv = d.querySelector('#' + inp.getAttribute('list') + ' option').value;
     inp.value = optv; inp.dispatchEvent(new w.Event('change', { bubbles: true })); await wait(200);
-    console.log('   picked via search:', optv, '→', txt(d.querySelector('.big')), '|', txt(d.querySelector('.done-state')));
+    console.log('   search options sample:', [...d.querySelectorAll('#' + inp.getAttribute('list') + ' option')].slice(0, 4).map((o) => o.value).join(' / '), '\n   picked via search:', optv, '→', txt(d.querySelector('.big')), '|', txt(d.querySelector('.done-state')));
   } else { d.querySelector('.card [data-pick]').click(); await wait(200); console.log('   picked:', txt(d.querySelector('.big'))); }
   console.log('   close-match rows available:', d.querySelectorAll('#autoBox select').length, '| decisions note:', txt(d.querySelector('.nav + p')).slice(0, 60));
   click('[data-nav="4"]');

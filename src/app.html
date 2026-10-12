@@ -344,6 +344,7 @@ function run() {
   const dmap = new Map();
   for (const d of decisions.concat(uDecisions)) { const e = dmap.get(d.key); if (e) { e.count += d.count; e.rows = e.rows.concat(d.rows).slice(0, 5); } else dmap.set(d.key, Object.assign({}, d)); }
   S.res = { matched, decisions: Array.from(dmap.values()), agg, users, issues, valueCols };
+  S._use = null;
 }
 function remapByLabel(an, primary, lm) {
   const out = {}; for (const [c, lvl] of Object.entries(lm)) { const col = colByLabel(an, primary, Number(c)); if (col != null) out[col] = lvl; }
@@ -548,7 +549,8 @@ function card(d, i) {
   const parentName = parentNode ? parentNode.name : 'its parent';
   const cands = (d.candidates || []).filter((c) => c.score >= 0.5).slice(0, 4);
   const sameName = cands.filter((c) => c.score >= 0.999).length;
-  const why = d.status === 'ambiguous' ? `The template has ${sameName} ${pluralWord(lvl)} with this name under ${parentName}. Pick the right one.`
+  const twinsUnused = sameName > 1 && cands.filter((c) => c.score >= 0.999).every((c) => !useCount(c.code));
+  const why = d.status === 'ambiguous' ? `The template has ${sameName} ${pluralWord(lvl)} with this name under ${parentName}.` + (twinsUnused ? ' None of them is used by another row, so either works. Pick the spelling the field team uses.' : ' Pick the one not already used by another row.')
     : d.status === 'review' ? `No exact match under ${parentName}. These are the closest names.`
     : cands.length ? `Not found under ${parentName}. The closest names are below.` : `Not found under ${parentName}.`;
   const nSib = parentCodeList(d).reduce((n, pc) => n + descendants(pc, d.level).length, 0);
@@ -558,14 +560,31 @@ function card(d, i) {
     <div class="where">${parentNode ? 'Under ' + esc(MP.label(S.tree, parentCode)) + ' · ' : ''}used in ${plural(d.count, 'microplan row')}</div>
     <div class="why">${esc(why)}</div>
     <div class="choice-list">
-      ${cands.map((c) => `<button type="button" class="choice" data-pick="${i}" data-code="${esc(c.code)}"><span class="nm">${esc(c.name)}</span><span class="meta">${c.score >= 0.999 ? 'same name' : Math.round(c.score * 100) + '% similar'} · ${esc(c.code)}</span></button>`).join('')}
+      ${cands.map((c) => { const used = useCount(c.code);
+        return `<button type="button" class="choice" data-pick="${i}" data-code="${esc(c.code)}" title="${esc(c.code)}"><span class="nm">${esc(c.name)}</span><span class="meta">${c.score >= 0.999 ? 'same name' : Math.round(c.score * 100) + '% similar'} · ${used ? 'already used by ' + plural(used, 'other row') : 'not used by any other row'}</span></button>`; }).join('')}
       ${searching ? `<input type="text" list="dl-${i}" data-qsearch="${i}" placeholder="Type to search ${fmt(nSib)} ${esc(pluralWord(lvl))}" aria-label="Search ${esc(pluralWord(lvl))} under ${esc(parentName)}" autocomplete="off">
-        <datalist id="dl-${i}">${parentCodeList(d).flatMap((pc) => descendants(pc, d.level)).sort((x, y) => x.name.localeCompare(y.name)).map((n) => `<option value="${esc(n.name + ' — ' + n.code)}"></option>`).join('')}</datalist>`
+        <datalist id="dl-${i}">${searchOptions(d).map((o) => `<option value="${esc(o.value)}"></option>`).join('')}</datalist>`
         : nSib > cands.length ? `<button type="button" class="choice alt" data-toggle="search:${esc(d.key)}"><span class="nm">Search all ${fmt(nSib)} ${esc(pluralWord(lvl))} under ${esc(parentName)}</span></button>` : ''}
       <button type="button" class="choice alt" data-pick="${i}" data-code="__SKIP__"><span class="nm">Not in the template — leave ${d.count === 1 ? 'this row' : 'these ' + fmt(d.count) + ' rows'} out</span></button>
     </div></div>`;
 }
 const parentCodeList = (d) => (d.parentCodes && d.parentCodes.length ? d.parentCodes : S.tree.roots);
+/** How many microplan and user rows already resolve to a boundary (helps tell same-named boundaries apart). */
+function useCount(code) {
+  if (!S._use) { S._use = new Map(); for (const m of S.res.matched.concat(S.res.users)) if (m.code) S._use.set(m.code, (S._use.get(m.code) || 0) + 1); }
+  return S._use.get(code) || 0;
+}
+/** Search options by name; repeated names get “(used)” / “(unused)” or a number so each option is distinct. */
+function searchOptions(d) {
+  const nodes = parentCodeList(d).flatMap((pc) => descendants(pc, d.level)).sort((x, y) => x.name.localeCompare(y.name));
+  const counts = new Map(); nodes.forEach((n) => counts.set(n.name, (counts.get(n.name) || 0) + 1));
+  const seen = new Map();
+  return nodes.map((n) => {
+    if (counts.get(n.name) === 1) return { value: n.name, code: n.code };
+    const k = (seen.get(n.name) || 0) + 1; seen.set(n.name, k);
+    return { value: `${n.name} (${k} of ${counts.get(n.name)}, ${useCount(n.code) ? 'in use' : 'unused'})`, code: n.code };
+  });
+}
 
 // ───────── 4 · export ─────────
 const PHONE_RULES = ['Phone', 'Duplicate phone'];
@@ -818,8 +837,8 @@ view.addEventListener('change', async (e) => {
   }
   if (t.dataset.qsearch !== undefined) {
     const d = S._q[Number(t.dataset.qsearch)]; const v = t.value.trim(); if (!v) return;
-    const all = parentCodeList(d).flatMap((pc) => descendants(pc, d.level));
-    const hit = all.find((n) => n.name + ' — ' + n.code === v) || (all.filter((n) => n.name.toLowerCase() === v.toLowerCase()).length === 1 ? all.find((n) => n.name.toLowerCase() === v.toLowerCase()) : null);
+    const opts = searchOptions(d);
+    const hit = opts.find((o) => o.value === v) || opts.find((o) => o.value.toLowerCase() === v.toLowerCase());
     if (hit) { S.open['search:' + d.key] = false; decide(d, hit.code); } else toast('Pick a name from the list');
     return;
   }
