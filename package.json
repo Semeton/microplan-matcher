@@ -1,0 +1,16 @@
+{
+  "name": "microplan-matcher",
+  "version": "1.0.0",
+  "description": "Match a microplan to DIGIT HCM boundary codes and fill the console unified template.",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test/run_page.js dist/index.html"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "exceljs": "^4.4.0",
+    "jsdom": "^24.1.3",
+    "xlsx": "^0.18.5"
+  },
+  "private": true
+}

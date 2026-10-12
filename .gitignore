@@ -1,0 +1,13 @@
+node_modules/
+dist/
+test/x*/
+test/lo/
+test/page_*
+test/out_*
+# fixtures built from real programme data (names, phones) never leave this machine
+test/gombe_*
+test/make_fixtures.py
+test/run_gombe.js
+test/run_write.js
+test/run_v41.js
+test/dv_fix_probe.js

@@ -1,0 +1,625 @@
+<title>Microplan Matcher</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one quiet column, one step on screen at a time; colour only where something needs attention. */
+:root {
+  --bg: #f6f7f6; --surface: #ffffff; --ink: #18201d; --muted: #66726d; --faint: #9aa59f; --line: #e3e7e4; --hover: #f0f3f1;
+  --accent: #0b6e5f; --accent-ink: #ffffff; --accent-soft: #e3f1ed;
+  --ok: #1d7a45; --warn: #a35d00; --err: #b42318;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111614; --surface: #171e1b; --ink: #e6ece9; --muted: #98a59f; --faint: #66736d; --line: #26302c; --hover: #1d2622;
+  --accent: #45bca4; --accent-ink: #06150f; --accent-soft: #163029; --ok: #5cc68b; --warn: #e4a647; --err: #f27a6c; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #111614; --surface: #171e1b; --ink: #e6ece9; --muted: #98a59f; --faint: #66736d; --line: #26302c; --hover: #1d2622;
+  --accent: #45bca4; --accent-ink: #06150f; --accent-soft: #163029; --ok: #5cc68b; --warn: #e4a647; --err: #f27a6c; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 760px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 72px; display: grid; gap: 28px; }
+h1, h2 { margin: 0; font-weight: 600; text-wrap: balance; line-height: 1.2; }
+h1 { font-size: 1.5rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.15rem; }
+p { margin: 0; }
+.muted { color: var(--muted); } .small { font-size: 0.85rem; }
+.mono { font-family: var(--f-mono); font-size: 0.85em; }
+
+header { display: grid; gap: 4px; }
+
+/* step indicator */
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.steps button { all: unset; cursor: pointer; display: grid; gap: 6px; font-size: 0.8rem; color: var(--faint); }
+.steps button::before { content: ""; height: 3px; border-radius: 2px; background: var(--line); }
+.steps button.done { color: var(--muted); } .steps button.done::before { background: var(--accent); opacity: 0.45; }
+.steps button.on { color: var(--ink); font-weight: 600; } .steps button.on::before { background: var(--accent); }
+.steps button:disabled { cursor: default; }
+.steps button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 28px; display: grid; gap: 22px; min-width: 0; }
+.panel > .intro { display: grid; gap: 6px; }
+
+/* files */
+.files { display: grid; gap: 12px; }
+.file { position: relative; display: flex; align-items: center; gap: 14px; padding: 16px 18px; border: 1px dashed var(--line); border-radius: 8px; cursor: pointer; min-width: 0; }
+.file:hover, .file.over { border-color: var(--accent); background: var(--hover); }
+.file.loaded { border-style: solid; }
+.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.file .ic { width: 34px; height: 34px; border-radius: 8px; background: var(--hover); display: grid; place-items: center; flex: none; color: var(--muted); font-family: var(--f-mono); font-size: 0.72rem; }
+.file.loaded .ic { background: var(--accent-soft); color: var(--accent); }
+.file .txt { display: grid; min-width: 0; }
+.file .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .meta { font-size: 0.84rem; color: var(--muted); }
+.file .act { margin-left: auto; font-size: 0.84rem; color: var(--accent); flex: none; }
+.example { font-size: 0.86rem; color: var(--muted); }
+
+/* summary list */
+.facts { display: grid; gap: 0; border-top: 1px solid var(--line); }
+.fact { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: start; }
+.fact .mark { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 0.7rem; font-weight: 600; margin-top: 2px; }
+.mark.ok { background: var(--accent-soft); color: var(--accent); }
+.mark.warn { background: var(--warn); color: var(--surface); }
+.mark.err { background: var(--err); color: var(--surface); }
+.fact .t { min-width: 0; overflow-wrap: anywhere; }
+.fact .d { font-size: 0.84rem; color: var(--muted); margin-top: 2px; }
+
+details.edit > summary { list-style: none; cursor: pointer; color: var(--accent); font-size: 0.9rem; font-weight: 500; width: fit-content; }
+details.edit > summary::-webkit-details-marker { display: none; }
+details.edit[open] > summary { margin-bottom: 14px; }
+.form { display: grid; gap: 14px; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: center; }
+.row label { font-size: 0.88rem; min-width: 0; overflow-wrap: anywhere; }
+.row label .mono { color: var(--faint); }
+.group-title { font-size: 0.78rem; font-weight: 600; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; padding-top: 6px; }
+select, input[type="text"] { font: inherit; font-size: 0.88rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; width: 100%; min-width: 0; }
+select:focus-visible, input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 0.88rem; }
+
+/* buttons */
+button { font: inherit; font-size: 0.9rem; font-weight: 500; border-radius: 7px; padding: 9px 16px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+button:hover:not(:disabled) { background: var(--hover); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+button.quiet { border-color: transparent; background: transparent; color: var(--accent); padding-inline: 6px; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+.nav { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* review */
+.big { font-size: 2rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1; }
+.progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--accent); }
+.queue { display: grid; gap: 10px; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+.card .who { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+.card .who b { font-weight: 600; }
+.card .where { font-size: 0.82rem; color: var(--muted); overflow-wrap: anywhere; }
+.choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.choices button { font-size: 0.86rem; padding: 6px 12px; }
+.choices button .pc { color: var(--faint); font-variant-numeric: tabular-nums; margin-left: 6px; font-size: 0.8rem; }
+.choices select { width: auto; max-width: 100%; }
+.tag { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+.done-state { text-align: center; padding: 18px 0 6px; display: grid; gap: 6px; }
+
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 500; color: var(--muted); font-size: 0.8rem; }
+td .sub { color: var(--muted); font-size: 0.78rem; }
+td select { min-width: 200px; }
+
+.status { font-size: 0.86rem; color: var(--muted); min-height: 1.4em; }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 7px; font-size: 0.88rem; max-width: calc(100% - 32px); z-index: 10; }
+footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
+@media (max-width: 560px) { .wrap { padding-inline: 16px; padding-block: 24px 56px; } .panel { padding: 20px 16px; } .row { grid-template-columns: 1fr; gap: 4px; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Microplan Matcher</h1>
+    <p class="muted">Turn a microplan into a filled DIGIT HCM unified template.</p>
+  </header>
+
+  <nav class="steps" id="steps" aria-label="Steps">
+    <button type="button" data-go="1">Files</button>
+    <button type="button" data-go="2">Check columns</button>
+    <button type="button" data-go="3">Resolve names</button>
+    <button type="button" data-go="4">Export</button>
+  </nav>
+
+  <main id="view" class="panel" aria-live="polite"></main>
+
+  <footer>Files are read in this browser only. Nothing is uploaded.</footer>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script>
+/*__ENGINE__*/
+</script>
+<script>
+/*__WRITER__*/
+</script>
+<script>
+const SAMPLE = /*__SAMPLE__*/null;
+</script>
+<script>
+(function () {
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const plural = (n, w, p) => `${fmt(n)} ${n === 1 ? w : (p || w + 's')}`;
+
+const S = {
+  step: 1, example: false, busy: '',
+  tplBuf: null, tplName: '', tree: null, facts: null,
+  mpName: '', mpSheets: [], analyses: [],
+  cfg: { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true },
+  aliases: {}, res: null, showAuto: false, exportMsg: '',
+};
+
+// ───────── storage (per-viewer convenience only) ─────────
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* unavailable */ } },
+};
+const aliasStoreKey = () => 'mpm.aliases.' + (S.tree && S.tree.roots[0] || 'x');
+function loadAliases() { S.aliases = S.example ? {} : (store.get(aliasStoreKey()) || {}); }
+function saveAliases() { if (!S.example) store.set(aliasStoreKey(), S.aliases); }
+
+// ───────── downloads ─────────
+const dlPromise = (window.claude && typeof window.claude.use === 'function') ? window.claude.use('downloads').catch(() => null) : Promise.resolve(null);
+async function saveFile(filename, blob) {
+  const dl = await dlPromise;
+  if (dl) {
+    try { await dl.save({ filename, data: blob }); toast('Saved ' + filename); return; }
+    catch (e) { if (e && e.code === 'declined') { toast('Save cancelled'); return; } if (e && e.code === 'rate_limited') { toast('A save prompt is already open'); return; } }
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+let toastT;
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (t.hidden = true), 3000); }
+
+// ───────── loading ─────────
+function sheetsFromXLSX(buf, keepBlank) {
+  const wb = XLSX.read(buf, { type: 'array', cellDates: false });
+  return wb.SheetNames.map((name, i) => ({
+    name, hidden: !!(wb.Workbook && wb.Workbook.Sheets && wb.Workbook.Sheets[i] && wb.Workbook.Sheets[i].Hidden),
+    rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: keepBlank !== false }),
+  }));
+}
+async function loadTemplate(buf, name) {
+  S.tplBuf = buf; S.tplName = name;
+  S.tree = MP.parseTemplate(sheetsFromXLSX(buf, false));
+  const ewb = new ExcelJS.Workbook(); await ewb.xlsx.load(buf);
+  S.facts = MPW.templateFacts(ewb);
+  loadAliases();
+}
+async function loadMicroplan(buf, name) { S.mpName = name; S.mpSheets = sheetsFromXLSX(buf, true); }
+
+function analyse() {
+  const labels = S.tree ? S.tree.levelLabels : [];
+  S.analyses = S.mpSheets.map((sh) => MP.analyseSheet(sh, labels)).map((a, i) => a && Object.assign(a, { idx: i }));
+  const cands = S.analyses.filter((a) => a && a.cols.filter((c) => c.kind).length >= 2);
+  const boundaryC = cands.filter((a) => !(a.person.name && a.person.phone));
+  const userC = cands.filter((a) => a.person.name && a.person.phone);
+  const best = boundaryC.sort((a, b) => b.nRows - a.nRows)[0];
+  S.cfg.sheet = best ? best.sheet : null; S.cfg.extra = [];
+  S.cfg.userSheet = userC.length ? userC.sort((a, b) => b.nRows - a.nRows)[0].sheet : null;
+  setupBoundarySheet(); setupUserSheet();
+}
+const A = (name) => S.analyses.find((a) => a && a.sheet === name);
+function setupBoundarySheet() {
+  const a = A(S.cfg.sheet); if (!a || !S.tree) { S.cfg.levelMap = {}; S.cfg.targetMap = {}; return; }
+  S.cfg.levelMap = MP.autoLevelMap(a, S.tree);
+  const vc = MP.suggestValueCols(a, S.facts.targetKeys);
+  S.cfg.targetMap = {};
+  for (const t of S.facts.targetKeys) { const hit = vc.find((v) => v.guess === t.key); S.cfg.targetMap[t.key] = hit ? hit.c : ''; }
+}
+function setupUserSheet(keepPerson) {
+  const a = A(S.cfg.userSheet); if (!a || !S.tree) { S.cfg.person = {}; S.cfg.userLevelMap = {}; S.cfg.roleMap = {}; return; }
+  S.cfg.userLevelMap = MP.autoLevelMap(a, S.tree);
+  if (!keepPerson) S.cfg.person = { name: a.person.name ? a.person.name.c : '', phone: a.person.phone ? a.person.phone.c : '', role: a.person.role ? a.person.role.c : '' };
+  const sh = S.mpSheets.find((s) => s.name === S.cfg.userSheet);
+  const roles = new Set();
+  if (S.cfg.person.role !== '' && S.cfg.person.role != null) for (let r = a.headerRow + 1; r < sh.rows.length; r++) { const v = MP.cellStr((sh.rows[r] || [])[S.cfg.person.role]); if (v) roles.add(v); }
+  S.cfg.roleMap = {};
+  Array.from(roles).slice(0, 60).forEach((d) => (S.cfg.roleMap[d] = MPW.guessRole(d, S.facts.roleOptions) || ''));
+  if (!S.cfg.empType) S.cfg.empType = S.facts.employmentOptions.find((x) => /temp/i.test(x)) || S.facts.employmentOptions[0] || 'Temporary';
+}
+
+// ───────── matching ─────────
+function run() {
+  if (!S.tree || !S.cfg.sheet) { S.res = null; return; }
+  const a = A(S.cfg.sheet);
+  const valueCols = Array.from(new Set(Object.values(S.cfg.targetMap).filter((v) => v !== '' && v != null).map(Number)));
+  const recs = []; const seen = new Set();
+  for (const name of [S.cfg.sheet].concat(S.cfg.extra)) {
+    const an = A(name); const sh = S.mpSheets.find((s) => s.name === name);
+    const primary = name === S.cfg.sheet;
+    const lm = primary ? S.cfg.levelMap : remapByLabel(an, a, S.cfg.levelMap);
+    const vc = primary ? valueCols : valueCols.map((c) => colByLabel(an, a, c));
+    for (const r of MP.extractRecords(sh, an, lm, vc.filter((c) => c != null))) {
+      const k = (r.path || []).map((p) => MP.canon(p.name)).join('/');
+      if (!primary) { if (seen.has(k)) continue; const v2 = {}; valueCols.forEach((c, i) => { const cc = vc[i]; if (cc != null && r.values[cc] !== undefined) v2[c] = r.values[cc]; }); r.values = v2; }
+      seen.add(k); recs.push(r);
+    }
+  }
+  const { matched, decisions } = MP.matchRecords(S.tree, recs, S.aliases);
+  const agg = MP.aggregate(S.tree, matched, valueCols);
+  let users = [], uDecisions = [];
+  if (S.cfg.userSheet && S.cfg.person.name !== '' && S.cfg.person.phone !== '') {
+    const ua = A(S.cfg.userSheet); const ush = S.mpSheets.find((s) => s.name === S.cfg.userSheet);
+    const um = MP.matchRecords(S.tree, MP.extractRecords(ush, ua, S.cfg.userLevelMap, [], S.cfg.person), S.aliases);
+    uDecisions = um.decisions;
+    users = um.matched.filter((u) => u.person).map((u) => {
+      const role = S.cfg.roleMap[u.person.role] || '';
+      return Object.assign(u, { phoneNorm: MP.normPhone(u.person.phone, S.cfg.phoneFmt), role, roleKind: MPW.roleKind(role) });
+    });
+  }
+  const hfLevel = S.tree.levelLabels.findIndex((l) => MP.hierKind(l) === 'hf');
+  const valueLabels = Object.fromEntries(a.cols.map((c) => [c.c, c.label]));
+  const issues = MP.validate({ tree: S.tree, matched, agg, valueCols, valueLabels, users, hfLevel: hfLevel >= 0 ? hfLevel : null, specialCharsCheck: true });
+  const dmap = new Map();
+  for (const d of decisions.concat(uDecisions)) { const e = dmap.get(d.key); if (e) { e.count += d.count; e.rows = e.rows.concat(d.rows).slice(0, 5); } else dmap.set(d.key, Object.assign({}, d)); }
+  S.res = { matched, decisions: Array.from(dmap.values()), agg, users, issues, valueCols };
+}
+function remapByLabel(an, primary, lm) {
+  const out = {}; for (const [c, lvl] of Object.entries(lm)) { const col = colByLabel(an, primary, Number(c)); if (col != null) out[col] = lvl; }
+  return Object.keys(out).length ? out : MP.autoLevelMap(an, S.tree);
+}
+function colByLabel(an, primary, c) { const lab = MP.basicNorm((primary.cols[c] || {}).label); const hit = an.cols.find((x) => MP.basicNorm(x.label) === lab); return hit ? hit.c : null; }
+
+const needs = () => (S.res ? S.res.decisions.filter((d) => ['review', 'ambiguous', 'unmatched'].includes(d.status) && d.aliasKey) : []);
+const ready = () => !!(S.tree && S.mpSheets.length);
+
+// ───────── shell ─────────
+function render() {
+  const can = { 1: true, 2: ready(), 3: ready() && !!S.res, 4: ready() && !!S.res };
+  document.querySelectorAll('#steps button').forEach((b) => {
+    const n = Number(b.dataset.go);
+    b.classList.toggle('on', n === S.step); b.classList.toggle('done', n < S.step && can[n]);
+    b.disabled = !can[n]; b.setAttribute('aria-current', n === S.step ? 'step' : 'false');
+  });
+  $('view').innerHTML = [null, viewFiles, viewColumns, viewNames, viewExport][S.step]();
+}
+function go(n) { S.step = n; render(); window.scrollTo({ top: 0 }); }
+$('steps').addEventListener('click', (e) => { const b = e.target.closest('button[data-go]'); if (b && !b.disabled) go(Number(b.dataset.go)); });
+function nav(back, nextLabel, nextOk) {
+  return `<div class="nav">${back ? `<button type="button" class="quiet" data-nav="${back}">← Back</button>` : '<span></span>'}${nextLabel ? `<button type="button" class="primary" data-nav="${S.step + 1}"${nextOk ? '' : ' disabled'}>${nextLabel}</button>` : ''}</div>`;
+}
+
+// ───────── 1 · files ─────────
+function fileBox(id, accept, loaded, name, meta, prompt, ic) {
+  return `<label class="file${loaded ? ' loaded' : ''}" id="drop-${id}">
+    <input type="file" id="${id}" accept="${accept}">
+    <span class="ic">${ic}</span>
+    <span class="txt"><span class="name">${esc(loaded ? name : prompt)}</span><span class="meta">${loaded ? meta : 'Drop the file here or click to choose'}</span></span>
+    ${loaded ? '<span class="act">Replace</span>' : ''}
+  </label>`;
+}
+function viewFiles() {
+  const tplMeta = S.tree ? `${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')} · ${S.tree.levelLabels.length} levels` : '';
+  const a = S.cfg.sheet && A(S.cfg.sheet);
+  const mpMeta = S.mpSheets.length ? (a ? `${plural(a.nRows, 'row')} on “${esc(S.cfg.sheet)}”` : 'No sheet with State / LGA / Ward columns found') : '';
+  return `<div class="intro"><h2>Add the two files</h2><p class="muted small">The template comes from the console for this campaign. The microplan can be a v4.1 microplan, a Master Data sheet, or a list with users.</p></div>
+    <div class="files">
+      ${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}
+      ${fileBox('fileMp', '.xlsx,.xls,.xlsm,.csv', !!S.mpSheets.length, S.mpName, mpMeta, 'Microplan', 'MP')}
+    </div>
+    ${S.example ? `<p class="example">You're looking at example data for Akko LGA. <button type="button" class="quiet" id="clearEx">Start empty</button></p>` : (!ready() && SAMPLE ? `<p class="example"><button type="button" class="quiet" id="loadEx">Try it with example data</button></p>` : '')}
+    <div class="status" role="status">${esc(S.busy)}</div>
+    ${nav(0, 'Continue', ready())}`;
+}
+
+// ───────── 2 · columns ─────────
+function opt(v, label, sel) { return `<option value="${esc(v)}"${String(sel) === String(v) ? ' selected' : ''}>${esc(label)}</option>`; }
+function viewColumns() {
+  const a = A(S.cfg.sheet);
+  if (!a) return `<div class="intro"><h2>No boundary columns found</h2><p class="muted small">None of the sheets has State, LGA, Ward or Health Facility columns. Check the microplan file.</p></div>${nav(1)}`;
+  const mappedLv = Object.values(S.cfg.levelMap).map((l) => S.tree.levelLabels[l]);
+  const tk = S.facts.targetKeys; const tFilled = tk.filter((t) => S.cfg.targetMap[t.key] !== '' && S.cfg.targetMap[t.key] != null);
+  const ua = A(S.cfg.userSheet);
+  const unmappedRoles = Object.values(S.cfg.roleMap).filter((r) => !r).length;
+  const fact = (state, title, detail) => `<div class="fact"><span class="mark ${state}">${state === 'ok' ? '✓' : '!'}</span><div class="t">${title}${detail ? `<div class="d">${detail}</div>` : ''}</div></div>`;
+  const facts = [
+    fact('ok', `Rows from <b>${esc(S.cfg.sheet)}</b>`, plural(a.nRows, 'row')),
+    fact(mappedLv.length >= 2 ? 'ok' : 'err', 'Boundary columns', mappedLv.length ? mappedLv.join(' › ') : 'None mapped'),
+    tk.length ? fact(tFilled.length === tk.length ? 'ok' : 'warn', 'Targets', tFilled.length ? tFilled.map((t) => `${esc(t.label)} ← ${esc((a.cols[S.cfg.targetMap[t.key]] || {}).label)}`).join('<br>') + (tFilled.length < tk.length ? `<br>${tk.length - tFilled.length} template column${tk.length - tFilled.length > 1 ? 's' : ''} left blank` : '') : 'No target columns matched')
+      : fact('ok', 'Targets', 'This template has no target sheet'),
+    ua ? fact(unmappedRoles ? 'warn' : 'ok', `Users from <b>${esc(S.cfg.userSheet)}</b>`, Object.entries(S.cfg.roleMap).map(([d, r]) => `${esc(d)} → ${r ? esc(r) : '<i>no role chosen</i>'}`).join(' · ') || 'No designation column')
+       : fact('ok', 'Users', 'No user list in this microplan'),
+  ].join('');
+  return `<div class="intro"><h2>Check the columns</h2><p class="muted small">Detected automatically. Open the editor only if something below is wrong.</p></div>
+    <div class="facts">${facts}</div>
+    <details class="edit"${S._editOpen ? ' open' : ''} id="editMap"><summary>Edit columns</summary>${mappingForm(a, ua)}</details>
+    ${nav(1, 'Match names', mappedLv.length >= 2)}`;
+}
+function mappingForm(a, ua) {
+  const lv = (cur) => `<option value="">Ignore</option>` + S.tree.levelLabels.map((l, i) => opt(i, l, cur)).join('');
+  const numCols = a.cols.filter((c) => c.numeric && !c.kind);
+  const hierCols = a.cols.filter((c) => (c.kind || S.cfg.levelMap[c.c] !== undefined) && c.duplicateOf === undefined);
+  const sheets = S.analyses.filter((x) => x && x.cols.filter((c) => c.kind).length >= 2);
+  let h = `<div class="form">
+    <div class="row"><label for="selSheet">Sheet with boundary rows</label><select id="selSheet">${sheets.map((x) => opt(x.sheet, `${x.sheet} (${fmt(x.nRows)} rows)`, S.cfg.sheet)).join('')}</select></div>
+    <div class="group-title">Boundary levels</div>
+    ${hierCols.map((c) => `<div class="row"><label for="lvl-${c.c}">${esc(c.label)} <span class="mono">${MP.colLetter(c.c)}</span></label><select id="lvl-${c.c}" data-lvl="${c.c}">${lv(S.cfg.levelMap[c.c] ?? '')}</select></div>`).join('')}`;
+  if (S.facts.targetKeys.length) {
+    h += `<div class="group-title">Targets</div>` + S.facts.targetKeys.map((t, i) => `<div class="row"><label for="tgt-${i}">${esc(t.label)}</label><select id="tgt-${i}" data-tgt="${esc(t.key)}"><option value="">Leave blank</option>${numCols.map((c) => opt(c.c, c.label, S.cfg.targetMap[t.key])).join('')}</select></div>`).join('')
+      + `<div class="row"><label for="selSplit">If the template lists smaller areas than the microplan</label><select id="selSplit">${opt('flag', 'Leave those rows blank', S.cfg.splitMode)}${opt('even', 'Split evenly across them', S.cfg.splitMode)}${opt('first', 'Put it all on the first one', S.cfg.splitMode)}</select></div>`;
+  }
+  h += `<div class="group-title">Users</div><div class="row"><label for="selUser">User list sheet</label><select id="selUser">${opt('', 'None', S.cfg.userSheet || '')}${sheets.map((x) => opt(x.sheet, x.sheet, S.cfg.userSheet)).join('')}</select></div>`;
+  if (ua) {
+    const cols = (cur) => `<option value="">—</option>` + ua.cols.filter((c) => !c.kind).map((c) => opt(c.c, c.label, cur)).join('');
+    h += `<div class="row"><label for="pName">Name column</label><select id="pName" data-person="name">${cols(S.cfg.person.name)}</select></div>
+      <div class="row"><label for="pPhone">Phone column</label><select id="pPhone" data-person="phone">${cols(S.cfg.person.phone)}</select></div>
+      <div class="row"><label for="pRole">Designation column</label><select id="pRole" data-person="role">${cols(S.cfg.person.role)}</select></div>`
+      + Object.entries(S.cfg.roleMap).map(([d, r], i) => `<div class="row"><label for="role-${i}">“${esc(d)}” becomes</label>${S.facts.roleOptions.length ? `<select id="role-${i}" data-role="${esc(d)}"><option value="">Choose a role</option>${S.facts.roleOptions.map((x) => opt(x, x, r)).join('')}</select>` : `<input type="text" id="role-${i}" data-role="${esc(d)}" value="${esc(r)}">`}</div>`).join('')
+      + `<div class="row"><label for="selPhone">Phone numbers written as</label><select id="selPhone">${opt('11', '08031234567', S.cfg.phoneFmt)}${opt('10', '8031234567', S.cfg.phoneFmt)}${opt('intl', '+2348031234567', S.cfg.phoneFmt)}</select></div>
+      <div class="row"><label for="selEmp">Employment type</label>${S.facts.employmentOptions.length ? `<select id="selEmp">${S.facts.employmentOptions.map((x) => opt(x, x, S.cfg.empType)).join('')}</select>` : `<input type="text" id="selEmp" value="${esc(S.cfg.empType)}">`}</div>
+      <label class="check"><input type="checkbox" id="skipBad"${S.cfg.skipBadUsers ? ' checked' : ''}> Leave out users with a bad phone number or an unknown facility</label>`;
+  }
+  return h + '</div>';
+}
+
+// ───────── 3 · names ─────────
+const STATUS_LABEL = { exact: 'Exact', alias: 'Your choice', fuzzy: 'Close match', review: 'Needs review', ambiguous: 'Two possible', unmatched: 'Not found', skipped: 'Skipped' };
+function viewNames() {
+  const R = S.res; const q = needs();
+  const resolved = R.matched.filter((m) => m.code).length; const total = R.matched.length || 1;
+  const pct = 100 * resolved / total;
+  const auto = R.decisions.filter((d) => d.status === 'fuzzy' || d.status === 'alias' || d.status === 'skipped');
+  let h = `<div class="intro"><h2>Resolve names</h2><p class="muted small">Each name is decided once and remembered for the next cycle.</p></div>
+    <div style="display:grid;gap:10px"><div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><span class="big">${pct.toFixed(pct === 100 ? 0 : 1)}%</span><span class="muted">of ${plural(R.matched.length, 'row')} matched to a boundary</span></div>
+    <div class="progress"><span style="width:${pct.toFixed(2)}%"></span></div></div>`;
+  if (q.length) {
+    h += `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><b>${plural(q.length, 'name')} need${q.length === 1 ? 's' : ''} you</b>${q.some((d) => d.status === 'review') ? '<button type="button" class="quiet" id="acceptTop">Accept all suggestions</button>' : ''}</div>
+      <div class="queue">${q.slice(0, 25).map((d, i) => card(d, i)).join('')}</div>${q.length > 25 ? `<p class="muted small">${fmt(q.length - 25)} more after these.</p>` : ''}`;
+  } else {
+    h += `<div class="done-state"><b>Every name is resolved.</b><span class="muted small">${auto.length ? `${plural(auto.length, 'name')} matched with small spelling differences.` : ''}</span></div>`;
+  }
+  if (auto.length) {
+    h += `<details class="edit"${S.showAuto ? ' open' : ''} id="autoBox"><summary>${S.showAuto ? 'Hide' : 'Review'} ${plural(auto.length, 'close match', 'close matches')}</summary>
+      <div class="tbl"><table><thead><tr><th>In the microplan</th><th>Matched to</th></tr></thead><tbody>
+      ${auto.slice(0, 300).map((d, i) => `<tr><td>${esc(d.name)}<div class="sub">${esc(S.tree.levelLabels[d.level])}${d.status !== 'fuzzy' ? ' · ' + STATUS_LABEL[d.status] : ''}</div></td><td><select data-auto="${i}" aria-label="Boundary for ${esc(d.name)}">${choiceOptions(d, d.code || (d.status === 'skipped' ? '__SKIP__' : ''))}</select></td></tr>`).join('')}
+      </tbody></table></div></details>`;
+  }
+  h += `<div class="nav"><button type="button" class="quiet" data-nav="2">← Back</button><span style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="quiet" id="moreMenu" aria-expanded="false">Saved decisions</button><button type="button" class="primary" data-nav="4">Continue</button></span></div>
+    <div id="savedBox" hidden class="small muted" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">${fmt(Object.keys(S.aliases).length)} saved${S.example ? ' (example, not kept)' : ''}
+      <button type="button" class="quiet" id="expAlias">Export</button>
+      <label class="quiet" style="position:relative;color:var(--accent);cursor:pointer">Import<input type="file" id="impAlias" accept=".json" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label></div>`;
+  S._q = q.slice(0, 25); S._auto = auto.slice(0, 300);
+  return h;
+}
+function choiceOptions(d, cur) {
+  const cands = d.candidates || [];
+  const extra = cur && cur !== '__SKIP__' && !cands.some((c) => c.code === cur) && S.tree.nodes.get(cur) ? [{ code: cur, name: S.tree.nodes.get(cur).name }] : [];
+  return extra.concat(cands).map((c) => opt(c.code, c.name, cur)).join('') + opt('__ALL__', 'Show all options…', '') + opt('__SKIP__', 'Not in the template (skip)', cur);
+}
+function card(d, i) {
+  const parent = d.parentCodes && d.parentCodes.length === 1 ? MP.label(S.tree, d.parentCodes[0]) : '';
+  const top = (d.candidates || []).filter((c) => c.score >= 0.5).slice(0, 3);
+  return `<div class="card">
+    <div class="who"><span><b>${esc(d.name)}</b> <span class="tag">· ${esc(S.tree.levelLabels[d.level])} · ${plural(d.count, 'row')}</span></span><span class="tag">${STATUS_LABEL[d.status]}</span></div>
+    ${parent ? `<div class="where">in ${esc(parent)}</div>` : ''}
+    <div class="choices">
+      ${top.map((c) => `<button type="button" data-pick="${i}" data-code="${esc(c.code)}">${esc(c.name)}<span class="pc">${Math.round(c.score * 100)}%</span></button>`).join('')}
+      <select data-q="${i}" aria-label="Other boundary for ${esc(d.name)}"><option value="">Other…</option>${opt('__ALL__', 'Show all options…', '')}${opt('__SKIP__', 'Not in the template (skip)', '')}</select>
+    </div></div>`;
+}
+
+// ───────── 4 · export ─────────
+function viewExport() {
+  const R = S.res;
+  const tmap = Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null);
+  const leaf = S.tree.depth; let rows = 0, filled = 0;
+  if (tmap.length) for (const n of S.tree.nodes.values()) { if (n.level !== leaf || n.synthetic) continue; rows++; if (MP.valueFor(S.tree, R.agg, n.code, Number(tmap[0][1]), S.cfg.splitMode).v != null) filled++; }
+  const unresolved = R.matched.filter((m) => !m.code).length;
+  const errs = R.issues.filter((i) => i.severity === 'error'), warns = R.issues.filter((i) => i.severity === 'warn');
+  const groups = new Map(); for (const i of R.issues) { const k = i.severity + '|' + i.rule; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
+  const uOk = R.users.filter((u) => u.code && u.phoneNorm.ok).length;
+  const headline = errs.length ? `${plural(errs.length, 'problem')} to fix before upload` : warns.length ? `Ready, with ${plural(warns.length, 'thing')} to check` : 'Ready to upload';
+  const lines = [
+    `${fmt(R.matched.length - unresolved)} of ${plural(R.matched.length, 'row')} matched`,
+    tmap.length ? `${fmt(filled)} of ${fmt(rows)} ${esc(S.tree.levelLabels[leaf])} rows get targets` : null,
+    S.cfg.userSheet ? `${fmt(S.cfg.skipBadUsers ? uOk : R.users.filter((u) => u.code).length)} of ${plural(R.users.length, 'user')} will be added` : null,
+  ].filter(Boolean);
+  const issueList = Array.from(groups.entries()).sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([k, list]) => {
+    const [sev, rule] = k.split('|');
+    return `<div class="fact"><span class="mark ${sev === 'error' ? 'err' : 'warn'}">!</span><div class="t">${esc(rule)} <span class="muted">· ${fmt(list.length)}</span><div class="d">${esc(list[0].message)}${list[0].ref ? ' · ' + esc(list[0].ref) : ''}${list.length > 1 ? ` <span>(+${fmt(list.length - 1)} in the report)</span>` : ''}</div></div></div>`;
+  }).join('');
+  return `<div class="intro"><h2>${headline}</h2><p class="muted small">${lines.join(' · ')}</p></div>
+    ${issueList ? `<div class="facts">${issueList}</div>` : ''}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button type="button" class="primary" id="btnFill">Download filled template</button>
+      <button type="button" class="quiet" id="btnReport">Download report</button>
+    </div>
+    <div class="status" id="expStatus" role="status">${esc(S.exportMsg)}</div>
+    <p class="muted small">Only target cells and new user rows are written. The template's hidden sheets and dropdowns are kept, and unmatched rows are left out.</p>
+    ${nav(3)}`;
+}
+
+// ───────── events ─────────
+const view = $('view');
+view.addEventListener('click', async (e) => {
+  const t = e.target.closest('button'); if (!t) return;
+  if (t.dataset.nav !== undefined) { const n = Number(t.dataset.nav); if (n >= 1) go(n); return; }
+  if (t.id === 'loadEx') { await bootExample(); return; }
+  if (t.id === 'clearEx') { clearAll(); render(); return; }
+  if (t.dataset.pick !== undefined) { const d = S._q[Number(t.dataset.pick)]; decide(d, t.dataset.code); return; }
+  if (t.id === 'acceptTop') { let n = 0; for (const d of needs()) if (d.status === 'review' && d.candidates && d.candidates[0]) { S.aliases[d.aliasKey] = d.candidates[0].code; n++; } saveAliases(); run(); render(); toast(`Accepted ${plural(n, 'suggestion')}`); return; }
+  if (t.id === 'moreMenu') { const b = $('savedBox'); b.hidden = !b.hidden; t.setAttribute('aria-expanded', String(!b.hidden)); return; }
+  if (t.id === 'expAlias') { saveFile(`microplan-decisions-${(S.tree.nodes.get(S.tree.roots[0]) || {}).name || 'boundaries'}.json`, new Blob([JSON.stringify({ root: S.tree.roots[0], saved: new Date().toISOString(), aliases: S.aliases }, null, 1)], { type: 'application/json' })); return; }
+  if (t.id === 'btnFill') { fillAndSave(t); return; }
+  if (t.id === 'btnReport') { saveReport(); return; }
+});
+view.addEventListener('toggle', (e) => { if (e.target.id === 'editMap') S._editOpen = e.target.open; if (e.target.id === 'autoBox') { S.showAuto = e.target.open; e.target.querySelector('summary').textContent = (S.showAuto ? 'Hide ' : 'Review ') + plural(S._auto.length, 'close match', 'close matches'); } }, true);
+view.addEventListener('dragover', (e) => { const f = e.target.closest('.file'); if (f) f.classList.add('over'); });
+view.addEventListener('dragleave', (e) => { const f = e.target.closest('.file'); if (f) f.classList.remove('over'); });
+view.addEventListener('change', async (e) => {
+  const t = e.target;
+  if (t.id === 'fileTpl' || t.id === 'fileMp') {
+    const f = t.files[0]; if (!f) return;
+    if (S.example) clearAll();
+    S.busy = `Reading ${f.name}…`; render(); await tick();
+    try { const buf = await f.arrayBuffer(); if (t.id === 'fileTpl') await loadTemplate(buf, f.name); else await loadMicroplan(buf, f.name); if (ready()) { analyse(); run(); } S.busy = ''; }
+    catch (err) { console.error(err); S.busy = `Could not read ${f.name}. ${err && err.message ? err.message : ''}`; }
+    render(); return;
+  }
+  if (t.id === 'impAlias' && t.files[0]) {
+    try { const j = JSON.parse(await t.files[0].text()); Object.assign(S.aliases, j.aliases || {}); saveAliases(); run(); render(); toast(`Imported ${plural(Object.keys(j.aliases || {}).length, 'decision')}`); }
+    catch (err) { toast('That file is not a decisions export'); }
+    return;
+  }
+  if (t.dataset.q !== undefined || t.dataset.auto !== undefined) {
+    const d = t.dataset.q !== undefined ? S._q[Number(t.dataset.q)] : S._auto[Number(t.dataset.auto)];
+    if (t.value === '__ALL__') {
+      const all = []; for (const pc of d.parentCodes) all.push(...descendants(pc, d.level));
+      all.sort((x, y) => x.name.localeCompare(y.name));
+      t.innerHTML = `<option value="">Choose (${all.length})</option>` + all.map((n) => opt(n.code, n.name, '')).join('') + opt('__SKIP__', 'Not in the template (skip)', '');
+      t.focus(); return;
+    }
+    if (t.value) decide(d, t.value);
+    return;
+  }
+  // column edits
+  if (t.id === 'selSheet') { S.cfg.sheet = t.value; setupBoundarySheet(); }
+  else if (t.dataset.lvl !== undefined) { if (t.value === '') delete S.cfg.levelMap[t.dataset.lvl]; else S.cfg.levelMap[t.dataset.lvl] = Number(t.value); }
+  else if (t.dataset.tgt !== undefined) S.cfg.targetMap[t.dataset.tgt] = t.value;
+  else if (t.id === 'selSplit') S.cfg.splitMode = t.value;
+  else if (t.id === 'selUser') { S.cfg.userSheet = t.value || null; setupUserSheet(); }
+  else if (t.dataset.person) { S.cfg.person[t.dataset.person] = t.value === '' ? '' : Number(t.value); if (t.dataset.person === 'role') setupUserSheet(true); }
+  else if (t.dataset.role !== undefined) S.cfg.roleMap[t.dataset.role] = t.value;
+  else if (t.id === 'selPhone') S.cfg.phoneFmt = t.value;
+  else if (t.id === 'selEmp') S.cfg.empType = t.value;
+  else if (t.id === 'skipBad') S.cfg.skipBadUsers = t.checked;
+  else return;
+  run(); render();
+});
+function decide(d, code) { S.aliases[d.aliasKey] = code; saveAliases(); run(); render(); }
+function descendants(code, level) {
+  const out = []; const st = [code];
+  while (st.length) { const n = S.tree.nodes.get(st.pop()); if (!n) continue; if (n.level === level) out.push(n); else if (n.level < level) st.push(...n.children); }
+  return out;
+}
+
+async function fillAndSave(btn) {
+  btn.disabled = true; $('expStatus').textContent = 'Writing the template…'; await tick();
+  try {
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(S.tplBuf.slice(0));
+    const R = S.res;
+    const users = R.users.filter((u) => u.code && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
+    const targetMap = Object.fromEntries(Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null));
+    const log = await MPW.fillTemplate(wb, { tree: S.tree, agg: R.agg, targetMap, splitMode: S.cfg.splitMode, users, employmentType: S.cfg.empType });
+    const buf = await wb.xlsx.writeBuffer();
+    await saveFile(`${S.tplName.replace(/\.xlsx$/i, '')}_filled.xlsx`, new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    S.exportMsg = `Wrote ${plural(log.targetsWritten, 'target cell')} and ${plural(log.usersWritten, 'user')}. ${log.targetMissing.length ? plural(log.targetMissing.length, 'target row') + ' left blank (listed in the report).' : ''}`;
+  } catch (err) { console.error(err); S.exportMsg = 'Could not write the template. ' + (err && err.message || err); }
+  $('expStatus').textContent = S.exportMsg; btn.disabled = false;
+}
+function saveReport() {
+  const R = S.res, T = S.tree;
+  const wb = XLSX.utils.book_new();
+  const tmap = Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null);
+  const summary = [['Microplan', S.mpName], ['Template', S.tplName], ['Generated', new Date().toISOString()], [],
+    ['Microplan rows', R.matched.length], ['Matched', R.matched.filter((m) => m.code).length], ['Not matched', R.matched.filter((m) => !m.code).length],
+    ['Errors', R.issues.filter((i) => i.severity === 'error').length], ['Warnings', R.issues.filter((i) => i.severity === 'warn').length]];
+  for (const [k, c] of tmap) { const r = R.agg.rolled.get(T.roots[0]); summary.push(['Total ' + k, r ? r[Number(c)] : '']); }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
+  const rows = [['Sheet', 'Row', 'Microplan path', 'Status', 'Failed at', 'Boundary code', 'Template path'].concat(tmap.map(([k]) => k))];
+  for (const m of R.matched) rows.push([m.sheet, m.row, (m.path || []).map((p) => p.name).join(' > ') || (m.names || []).join(' > '), STATUS_LABEL[m.status] || m.status, m.failedAt >= 0 && m.path ? T.levelLabels[m.path[m.failedAt].level] + ': ' + m.path[m.failedAt].name : '', m.code || '', m.code ? T.nodes.get(m.code).path.join(' > ') : ''].concat(tmap.map(([, c]) => (m.values ? m.values[Number(c)] : ''))));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Rows');
+  const dec = [['Level', 'Name in microplan', 'Parent', 'Rows', 'Status', 'Score', 'Chosen code', 'Chosen name', 'Top candidates']];
+  for (const d of R.decisions) dec.push([T.levelLabels[d.level], d.name, d.parentCodes && d.parentCodes.length === 1 ? MP.label(T, d.parentCodes[0]) : '', d.count, STATUS_LABEL[d.status] || d.status, Math.round((d.score || 0) * 100) / 100, d.code || '', d.code ? T.nodes.get(d.code).name : '', (d.candidates || []).slice(0, 3).map((c) => c.name + ' (' + Math.round(c.score * 100) + '%)').join('; ')]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(dec), 'Name decisions');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Severity', 'Check', 'Detail', 'Where']].concat(R.issues.map((i) => [i.severity, i.rule, i.message, i.ref]))), 'Checks');
+  if (tmap.length) {
+    const miss = [['Boundary code', 'Path']];
+    for (const n of T.nodes.values()) { if (n.level !== T.depth || n.synthetic) continue; if (MP.valueFor(T, R.agg, n.code, Number(tmap[0][1]), S.cfg.splitMode).v == null) miss.push([n.code, n.path.join(' > ')]); }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(miss), 'No target');
+  }
+  if (R.users.length) {
+    const u = [['Sheet', 'Row', 'Name', 'Phone (as given)', 'Phone (written)', 'Phone check', 'Designation', 'Role', 'Boundary code', 'Facility path']];
+    for (const x of R.users) u.push([x.sheet, x.row, x.person.name, x.person.phone, x.phoneNorm.ok ? x.phoneNorm.value : '', x.phoneNorm.ok ? 'ok' : x.phoneNorm.reason, x.person.role, x.role, x.code || '', x.code ? T.nodes.get(x.code).path.join(' > ') : (x.path || []).map((p) => p.name).join(' > ') + ' (not matched)']);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(u), 'Users');
+  }
+  saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_match_report.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+}
+
+function clearAll() {
+  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1 });
+  S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true };
+}
+
+// ───────── example: a console-style template and a microplan built in memory ─────────
+async function buildExample() {
+  const levels = ['Country', 'State', 'LGA', 'Ward', 'Health Facility', 'Community'];
+  const keys = ['ADMIN_COUNTRY', 'ADMIN_STATE', 'ADMIN_LGA', 'ADMIN_WARD', 'ADMIN_HEALTH FACILITY', 'ADMIN_COMMUNITY'];
+  const pathCode = new Map(SAMPLE.tpl.map(([p, c]) => [p, c]));
+  const helper = async (codes) => 'H_' + (await MP.sha256hex(codes.join('#')));
+  const hdr = (extraK, extraL) => { const k = [], l = []; keys.forEach((kk, i) => { if (i) { k.push(kk + '_HELPER'); l.push(kk + '_HELPER'); } k.push(kk); l.push(levels[i]); }); return [k.concat(extraK), l.concat(extraL)]; };
+  const wb = new ExcelJS.Workbook();
+  const fs = wb.addWorksheet('HCM_ADMIN_CONSOLE_FACILITIES_LI');
+  const us = wb.addWorksheet('HCM_ADMIN_CONSOLE_USERS_LIST');
+  const tg = wb.addWorksheet('HCM_ADMIN_CONSOLE_TARGETS');
+  const rs = wb.addWorksheet('_h_Roles_h_', { state: 'hidden' });
+  const bs = wb.addWorksheet('_h_Boundary_h_', { state: 'hidden' });
+  let [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_FACILITY_CODE', 'HCM_ADMIN_CONSOLE_FACILITY_NAME', 'HCM_ADMIN_CONSOLE_FACILITY_TYPE', 'HCM_ADMIN_CONSOLE_FACILITY_STATUS', 'HCM_ADMIN_CONSOLE_FACILITY_CAPACITY', 'HCM_ADMIN_CONSOLE_FACILITY_USAGE'], ['Boundary Code', 'Facility Code', 'Facility Name', 'Facility Type', 'Facility Status', 'Capacity', 'Facility Usage']);
+  fs.addRow(k); fs.addRow(l);
+  [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_USER_NAME', 'HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER', 'HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_1', 'HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE', 'HCM_ADMIN_CONSOLE_USER_USAGE'], ['Boundary Code', 'Name of the Person (Mandatory)', 'Phone Number (Mandatory)', 'User Role 1', 'Employment Type (Mandatory)', 'Active / Inactive']);
+  us.addRow(k); us.addRow(l);
+  ['Distributor', 'Health Facility Supervisor', 'Warehouse Manager', 'Field Supervisor'].forEach((r) => rs.addRow([r]));
+  for (let r = 3; r <= 60; r++) {
+    us.getCell(r, 15).dataValidation = { type: 'list', allowBlank: true, formulae: ["'_h_Roles_h_'!$A$1:$A$4"] };
+    us.getCell(r, 16).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Permanent,Temporary"'] };
+  }
+  [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_TARGET_AZM_1', 'HCM_ADMIN_CONSOLE_TARGET_AZM_2', 'HCM_ADMIN_CONSOLE_TARGET'], ['Boundary Code', 'Target 1-11 months', 'Target 12-59 months', 'Total Target']);
+  tg.addRow(k); tg.addRow(l);
+  for (const [p, c] of SAMPLE.tpl) {
+    bs.addRow([p, c]);
+    const segs = String(p).split('#');
+    if (segs.length < 5) continue;
+    const codes = segs.map((_, i) => pathCode.get(segs.slice(0, i + 1).join('#')));
+    const row = [];
+    for (let i = 0; i < 6; i++) { if (i) row.push(i < segs.length ? await helper(codes.slice(0, i)) : ''); row.push(segs[i] || ''); }
+    if (segs.length === 5) fs.addRow(row.concat([c, 'F-EX-' + c.slice(-5), segs[4], 'Health Facility', 'Permanent', 100, 'Inactive']));
+    else tg.addRow(row.concat([c, null, null, null]));
+  }
+  const tplBuf = await wb.xlsx.writeBuffer();
+  const mwb = XLSX.utils.book_new();
+  const md = [['Country', 'State', 'LGA', 'Ward', 'Health Facility', 'Community', 'Target population I 1-<12 months', 'Target population II 12-<59 months', 'Total Target population III']].concat(SAMPLE.mp.map((r) => r.map((v) => (v === '' ? null : v))));
+  XLSX.utils.book_append_sheet(mwb, XLSX.utils.aoa_to_sheet(md), 'Master Data');
+  const ul = [['Country', 'State', 'LGA', 'Ward', 'Health Facility', 'Name', 'Phone Number', 'Designation'],
+    ['Nigeria', 'Gombe', 'Akko', 'AKKO', 'Akko PHCC', 'Example OIC A', '8031234567', 'OIC'],
+    ['Nigeria', 'Gombe', 'Akko', 'AKKO', 'Akko PHCC', 'Example CDD A', '0812 345 6789', 'CDD'],
+    ['Nigeria', 'Gombe', 'Akko', 'AKKO', 'Akko PHCC', 'Example CDD B', '0812 345 6789', 'CDD'],
+    ['Nigeria', 'Gombe', 'Akko', 'Garko', 'Garko PHC', 'Example OIC B', '+2348091112223', 'OIC'],
+    ['Nigeria', 'Gombe', 'Akko', 'Garko', 'Garko PHC', 'Example CDD C', '0700000000', 'CDD'],
+    ['Nigeria', 'Gombe', 'Akko', 'Kalshingi', 'Kalshingi PHC', 'Example CDD D', '09065432100', 'Distributor']];
+  XLSX.utils.book_append_sheet(mwb, XLSX.utils.aoa_to_sheet(ul), 'UserList');
+  return { tplBuf, mpBuf: XLSX.write(mwb, { type: 'array', bookType: 'xlsx' }) };
+}
+async function bootExample() {
+  S.busy = 'Loading example…'; render();
+  try {
+    const { tplBuf, mpBuf } = await buildExample();
+    clearAll(); S.example = true;
+    await loadTemplate(tplBuf instanceof ArrayBuffer ? tplBuf : new Uint8Array(tplBuf).slice().buffer, 'Example_Akko_Unified_Template.xlsx');
+    await loadMicroplan(mpBuf, 'Example_Akko_Microplan.xlsx');
+    analyse(); run();
+  } catch (err) { console.error(err); }
+  S.busy = ''; render();
+}
+render();
+if (!window.XLSX || !window.ExcelJS) { S.busy = 'The spreadsheet libraries did not load. Check the connection and reload.'; render(); }
+else if (SAMPLE) bootExample();
+})();
+</script>
