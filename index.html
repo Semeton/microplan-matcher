@@ -601,8 +601,9 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
 
   // ───────────────────────── aggregation ─────────────────────────
   /** Sum values per matched node and roll up to ancestors. Returns {direct, rolled, levelsWithValues}. */
-  function aggregate(tree, matched, valueCols) {
+  function aggregate(tree, matched, valueCols, opts) {
     const direct = new Map();
+    opts = opts || {};
     const conflicts = [];
     const seen = new Map();
     for (const m of matched) {
@@ -615,6 +616,17 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
       const cur = direct.get(m.code) || {};
       for (const c of valueCols) { const v = m.values[c]; if (v !== undefined && v !== null) cur[c] = (cur[c] || 0) + v; }
       direct.set(m.code, cur);
+    }
+    // Optional: treat a value that sits on the only valued child of a parent as the parent's total
+    // (MC master-data convention), so split rules can spread it across all the parent's children.
+    let lifted = 0;
+    if (opts.liftSingle) {
+      const byParent = new Map();
+      for (const code of direct.keys()) { const n = tree.nodes.get(code); if (n && n.parent) { if (!byParent.has(n.parent)) byParent.set(n.parent, []); byParent.get(n.parent).push(code); } }
+      for (const [p, kids] of byParent) {
+        const par = tree.nodes.get(p);
+        if (kids.length === 1 && par.children.length > 1 && !direct.has(p)) { direct.set(p, direct.get(kids[0])); direct.delete(kids[0]); lifted++; }
+      }
     }
     const rolled = new Map();
     for (const [code, vals] of direct) {
@@ -633,7 +645,7 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
       while (n) { if (direct.has(n.code)) { twoLevel.push({ child: code, ancestor: n.code }); break; } n = n.parent ? tree.nodes.get(n.parent) : null; }
     }
     const levels = new Set(Array.from(direct.keys()).map((c) => tree.nodes.get(c).level));
-    return { direct, rolled, conflicts, twoLevel, levelsWithValues: Array.from(levels).sort() };
+    return { direct, rolled, conflicts, twoLevel, lifted, levelsWithValues: Array.from(levels).sort() };
   }
 
   /** Value for a template row at `code`: own/rolled-up value, or a split of the parent's value if
@@ -702,7 +714,7 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
     if (specialCharsCheck) {
       const bad = new Set();
       for (const m of matched) for (const p of m.path || []) if (/[^A-Za-z0-9 \-\/().,'&]/.test(p.name)) bad.add(p.name);
-      if (bad.size) add('warn', 'Special characters', bad.size + ' boundary names contain special characters (e.g. ' + Array.from(bad).slice(0, 5).map((x) => '"' + x + '"').join(', ') + ')');
+      if (bad.size) { add('warn', 'Special characters', bad.size + ' boundary names contain special characters (e.g. ' + Array.from(bad).slice(0, 3).map((x) => '"' + x + '"').join(', ') + ')'); issues[issues.length - 1].items = Array.from(bad).sort(); }
     }
 
     if (agg) {
@@ -733,17 +745,17 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
         const ref = u.sheet + '!' + u.row;
         if (!u.person.name) add('error', 'Blank name', 'User row without a name', ref);
         if (!u.phoneNorm.ok) add('error', 'Phone', (u.person.phone || '(blank)') + ' — ' + u.phoneNorm.reason, ref);
-        else { const p = u.phoneNorm.value; if (phones.has(p)) add('error', 'Duplicate phone', p + ' also used at ' + phones.get(p), ref); else phones.set(p, ref); }
+        else { const p = u.phoneNorm.value; if (phones.has(p)) { add('error', 'Duplicate phone', p + ' also used at ' + phones.get(p), ref); issues[issues.length - 1].refs = [phones.get(p), ref]; } else phones.set(p, ref); }
         if (!u.code) add('error', 'User boundary', 'User boundary not matched: ' + (u.path || []).map((p) => p.name).join(' › '), ref);
         if (u.code && u.roleKind) { const k = u.code; if (!perHF.has(k)) perHF.set(k, { oic: 0, cdd: 0 }); perHF.get(k)[u.roleKind]++; }
       }
       for (const [code, cnt] of perHF) if (cnt.oic > 1) add('warn', 'Duplicate OIC', label(tree, code) + ' has ' + cnt.oic + ' OIC / HF workers — the platform keeps only the first');
       if (ctx.hfLevel !== undefined && ctx.hfLevel !== null) {
         const hfs = new Set(); for (const m of matched) if (m.code) { let n = tree.nodes.get(m.code); while (n && n.level > ctx.hfLevel) n = tree.nodes.get(n.parent); if (n && n.level === ctx.hfLevel) hfs.add(n.code); }
-        let noOic = 0, noCdd = 0; const exO = [], exC = [];
-        for (const hf of hfs) { const cnt = perHF.get(hf) || { oic: 0, cdd: 0 }; if (!cnt.oic) { noOic++; if (exO.length < 6) exO.push(label(tree, hf)); } if (!cnt.cdd) { noCdd++; if (exC.length < 6) exC.push(label(tree, hf)); } }
-        if (noOic) add('warn', 'HF without OIC', noOic + ' facilities have no OIC / HF worker, e.g. ' + exO.join('; '));
-        if (noCdd) add('warn', 'HF without CDD', noCdd + ' facilities have no distributor, e.g. ' + exC.join('; '));
+        const exO = [], exC = [];
+        for (const hf of hfs) { const cnt = perHF.get(hf) || { oic: 0, cdd: 0 }; if (!cnt.oic) exO.push(label(tree, hf)); if (!cnt.cdd) exC.push(label(tree, hf)); }
+        if (exO.length) { add('warn', 'HF without OIC', exO.length + ' facilities have no OIC / HF worker, e.g. ' + exO.slice(0, 3).join('; ')); issues[issues.length - 1].items = exO.sort(); }
+        if (exC.length) { add('warn', 'HF without CDD', exC.length + ' facilities have no distributor, e.g. ' + exC.slice(0, 3).join('; ')); issues[issues.length - 1].items = exC.sort(); }
       }
     }
     return issues;
@@ -1137,6 +1149,7 @@ const S = {
   cfg: { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true },
   aliases: {}, res: null, showAuto: false, exportMsg: '',
   mode: 'plan', demo: null, demoMsg: '',
+  userEdits: {}, acks: new Set(), open: {},
 };
 function initDemo() {
   if (!S.tree) { S.demo = null; return; }
@@ -1244,20 +1257,23 @@ function run() {
     }
   }
   const { matched, decisions } = MP.matchRecords(S.tree, recs, S.aliases);
-  const agg = MP.aggregate(S.tree, matched, valueCols);
+  const agg = MP.aggregate(S.tree, matched, valueCols, { liftSingle: S.cfg.liftSingle });
   let users = [], uDecisions = [];
   if (S.cfg.userSheet && S.cfg.person.name !== '' && S.cfg.person.phone !== '') {
     const ua = A(S.cfg.userSheet); const ush = S.mpSheets.find((s) => s.name === S.cfg.userSheet);
     const um = MP.matchRecords(S.tree, MP.extractRecords(ush, ua, S.cfg.userLevelMap, [], S.cfg.person), S.aliases);
     uDecisions = um.decisions;
     users = um.matched.filter((u) => u.person).map((u) => {
+      const ref = u.sheet + '!' + u.row; const ed = S.userEdits[ref] || {};
+      u.ref = ref; u.givenPhone = u.person.phone;
+      if (ed.phone !== undefined) u.person = Object.assign({}, u.person, { phone: ed.phone });
       const role = S.cfg.roleMap[u.person.role] || '';
-      return Object.assign(u, { phoneNorm: MP.normPhone(u.person.phone, S.cfg.phoneFmt), role, roleKind: MPW.roleKind(role) });
+      return Object.assign(u, { phoneNorm: MP.normPhone(u.person.phone, S.cfg.phoneFmt), role, roleKind: MPW.roleKind(role), skipped: !!ed.skip, edited: ed.phone !== undefined });
     });
   }
   const hfLevel = S.tree.levelLabels.findIndex((l) => MP.hierKind(l) === 'hf');
   const valueLabels = Object.fromEntries(a.cols.map((c) => [c.c, c.label]));
-  const issues = MP.validate({ tree: S.tree, matched, agg, valueCols, valueLabels, users, hfLevel: hfLevel >= 0 ? hfLevel : null, specialCharsCheck: true });
+  const issues = MP.validate({ tree: S.tree, matched, agg, valueCols, valueLabels, users: users.filter((u) => !u.skipped), hfLevel: hfLevel >= 0 ? hfLevel : null, specialCharsCheck: true });
   const dmap = new Map();
   for (const d of decisions.concat(uDecisions)) { const e = dmap.get(d.key); if (e) { e.count += d.count; e.rows = e.rows.concat(d.rows).slice(0, 5); } else dmap.set(d.key, Object.assign({}, d)); }
   S.res = { matched, decisions: Array.from(dmap.values()), agg, users, issues, valueCols };
@@ -1469,27 +1485,35 @@ function card(d, i) {
 }
 
 // ───────── 4 · export ─────────
+const PHONE_RULES = ['Phone', 'Duplicate phone'];
 function viewExport() {
   const R = S.res;
   const tmap = Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null);
   const leaf = S.tree.depth; let rows = 0, filled = 0;
   if (tmap.length) for (const n of S.tree.nodes.values()) { if (n.level !== leaf || n.synthetic) continue; rows++; if (MP.valueFor(S.tree, R.agg, n.code, Number(tmap[0][1]), S.cfg.splitMode).v != null) filled++; }
   const unresolved = R.matched.filter((m) => !m.code).length;
-  const errs = R.issues.filter((i) => i.severity === 'error'), warns = R.issues.filter((i) => i.severity === 'warn');
-  const groups = new Map(); for (const i of R.issues) { const k = i.severity + '|' + i.rule; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
-  const uOk = R.users.filter((u) => u.code && u.phoneNorm.ok).length;
-  const headline = errs.length ? `${plural(errs.length, 'problem')} to fix before upload` : warns.length ? `Ready, with ${plural(warns.length, 'thing')} to check` : 'Ready to upload';
+  const willAdd = R.users.filter((u) => u.code && !u.skipped && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).length;
+  // group issues by rule; phone rules share one group with an inline editor
+  const groups = new Map();
+  for (const i of R.issues) { const rule = PHONE_RULES.includes(i.rule) ? 'Phone numbers' : i.rule; if (!groups.has(rule)) groups.set(rule, { rule, sev: i.severity, list: [] }); const g = groups.get(rule); g.list.push(i); if (i.severity === 'error') g.sev = 'error'; }
+  const all = Array.from(groups.values()).sort((a, b) => (a.sev === b.sev ? a.rule.localeCompare(b.rule) : a.sev === 'error' ? -1 : 1));
+  const active = all.filter((g) => !S.acks.has(g.rule)), acked = all.filter((g) => S.acks.has(g.rule));
+  const nErr = active.filter((g) => g.sev === 'error').length, nWarn = active.length - nErr;
+  const headline = nErr ? `${plural(nErr, 'problem')} to fix before upload` : nWarn ? `Ready, with ${plural(nWarn, 'thing')} to check` : 'Ready to upload';
   const lines = [
     `${fmt(R.matched.length - unresolved)} of ${plural(R.matched.length, 'row')} matched`,
     tmap.length ? `${fmt(filled)} of ${fmt(rows)} ${esc(S.tree.levelLabels[leaf])} rows get targets` : null,
-    S.cfg.userSheet ? `${fmt(S.cfg.skipBadUsers ? uOk : R.users.filter((u) => u.code).length)} of ${plural(R.users.length, 'user')} will be added` : null,
+    S.cfg.userSheet ? `${fmt(willAdd)} of ${plural(R.users.length, 'user')} will be added` : null,
   ].filter(Boolean);
-  const issueList = Array.from(groups.entries()).sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([k, list]) => {
-    const [sev, rule] = k.split('|');
-    return `<div class="fact"><span class="mark ${sev === 'error' ? 'err' : 'warn'}">!</span><div class="t">${esc(rule)} <span class="muted">· ${fmt(list.length)}</span><div class="d">${esc(list[0].message)}${list[0].ref ? ' · ' + esc(list[0].ref) : ''}${list.length > 1 ? ` <span>(+${fmt(list.length - 1)} in the report)</span>` : ''}</div></div></div>`;
-  }).join('');
+  const lifted = S.cfg.liftSingle ? `<div class="fact"><span class="mark ok">✓</span><div class="t">Each ${esc(S.tree.levelLabels[leaf - 1] || 'parent')} total is spread evenly across its ${esc(S.tree.levelLabels[leaf])} rows
+    <div class="d">${plural(R.agg.lifted, 'total')} spread. <button type="button" class="quiet" data-act="unspread">Undo</button></div></div></div>` : '';
+  const touched = R.users.filter((u) => u.edited || u.skipped);
+  const phoneFixed = touched.length && !groups.has('Phone numbers') ? `<div class="fact"><span class="mark ok">✓</span><div class="t">Phone numbers fixed
+    <div class="d">${plural(touched.filter((u) => u.edited && !u.skipped).length, 'number')} corrected · ${plural(touched.filter((u) => u.skipped).length, 'user')} left out</div>
+    <div class="choices" style="margin-top:6px;gap:2px"><button type="button" class="quiet" data-toggle="phones">${S.open.phones ? 'Hide' : 'Edit'}</button></div>${S.open.phones ? phoneEditor([]) : ''}</div></div>` : '';
   return `<div class="intro"><h2>${headline}</h2><p class="muted small">${lines.join(' · ')}</p></div>
-    ${issueList ? `<div class="facts">${issueList}</div>` : ''}
+    ${active.length || lifted || phoneFixed ? `<div class="facts">${lifted}${phoneFixed}${active.map(issueGroup).join('')}</div>` : ''}
+    ${acked.length ? `<details class="edit"><summary>${plural(acked.length, 'check')} marked as OK</summary><div class="facts">${acked.map((g) => `<div class="fact"><span class="mark ok">✓</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span><div class="d"><button type="button" class="quiet" data-unack="${esc(g.rule)}">Undo</button></div></div></div>`).join('')}</div></details>` : ''}
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="button" class="primary" id="btnFill">Download filled template</button>
       <button type="button" class="quiet" id="btnReport">Download report</button>
@@ -1497,6 +1521,54 @@ function viewExport() {
     <div class="status" id="expStatus" role="status">${esc(S.exportMsg)}</div>
     <p class="muted small">Only target cells and new user rows are written. The template's hidden sheets and dropdowns are kept, and unmatched rows are left out.</p>
     ${nav(3)}`;
+}
+const ACTION_HINT = {
+  'HF without OIC': 'Add them to the user list and reload it, or mark as OK if these facilities are not active this round.',
+  'HF without CDD': 'Add them to the user list and reload it, or mark as OK if these facilities are not active this round.',
+  'Near-duplicate names': 'These resolved to boundaries in Resolve names. Check the choice there.',
+  'Special characters': 'Only matters if these names create new boundaries; matched names are written by code.',
+  'Duplicate rows': 'Two rows point at the same boundary and were added together. Correct the microplan if that is wrong.',
+  'Targets at two levels': 'A facility and its communities both carry targets, so totals double count. Remove one level in the microplan and reload it.',
+  'Bad number': 'Correct the value in the microplan and reload it.',
+  'Incomplete path': 'A parent level is blank in these rows. Fill it in the microplan and reload it.',
+};
+function issueGroup(g) {
+  const sev = g.sev === 'error' ? 'err' : 'warn';
+  const first = g.list[0];
+  const key = g.rule;
+  let body = '', actions = '';
+  if (g.rule === 'Phone numbers') {
+    actions = `<button type="button" class="quiet" data-toggle="phones">${S.open.phones ? 'Hide' : 'Fix numbers'}</button>`;
+    if (S.open.phones) body = phoneEditor(g.list);
+  } else if (g.rule === 'Targets on one child per parent') {
+    actions = `<button type="button" class="quiet" data-act="spread">Spread each total across its ${esc(S.tree.levelLabels[S.tree.depth])} rows</button><button type="button" class="quiet" data-ack="${esc(key)}">Keep as given</button>`;
+  } else if (g.rule === 'User boundary') {
+    actions = `<button type="button" class="quiet" data-nav="3">Resolve in names</button>`;
+  } else {
+    const items = first.items || (g.list.length > 1 ? g.list.map((i) => i.message + (i.ref ? ' · ' + i.ref : '')) : null);
+    if (items && items.length > 1) actions += `<button type="button" class="quiet" data-toggle="${esc(key)}">${S.open[key] ? 'Hide list' : 'Show all ' + fmt(items.length)}</button>`;
+    if (g.rule === 'Near-duplicate names') actions += `<button type="button" class="quiet" data-nav="3">Open names</button>`;
+    actions += `<button type="button" class="quiet" data-ack="${esc(key)}">Mark as OK</button>`;
+    if (S.open[key] && items) body = `<ul class="small muted" style="margin:6px 0 0;padding-left:18px;max-height:260px;overflow:auto">${items.slice(0, 500).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
+  }
+  const hint = ACTION_HINT[g.rule] ? `<div class="d">${esc(ACTION_HINT[g.rule])}</div>` : '';
+  const detail = g.rule === 'Phone numbers' ? `${plural(g.list.length, 'user')} with a missing, invalid or repeated number` : esc(first.message) + (first.ref ? ' · ' + esc(first.ref) : '');
+  return `<div class="fact"><span class="mark ${sev}">!</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span>
+    <div class="d">${detail}</div>${hint}<div class="choices" style="margin-top:6px;gap:2px">${actions}</div>${body}</div></div>`;
+}
+function phoneEditor(list) {
+  const refs = new Set();
+  for (const i of list) { if (i.ref) refs.add(i.ref); (i.refs || []).forEach((r) => refs.add(r)); }
+  S.res.users.forEach((u) => { if (u.skipped || u.edited) refs.add(u.ref); });
+  const users = S.res.users.filter((u) => refs.has(u.ref));
+  return `<div class="tbl" style="margin-top:10px"><table><thead><tr><th>User</th><th>Phone</th><th></th><th>Leave out</th></tr></thead><tbody>
+    ${users.map((u) => { const dup = list.some((i) => i.rule === 'Duplicate phone' && (i.refs || []).includes(u.ref));
+      const state = u.skipped ? '<span class="muted">left out</span>' : !u.phoneNorm.ok ? `<span style="color:var(--err)">${esc(u.phoneNorm.reason)}</span>` : dup ? '<span style="color:var(--err)">used twice</span>' : '<span style="color:var(--ok)">ok</span>';
+      return `<tr><td>${esc(u.person.name || '(no name)')}<div class="sub">${esc(u.code ? S.tree.nodes.get(u.code).name : (u.path || []).map((p) => p.name).slice(-1)[0] || '')} · ${esc(u.ref)}</div></td>
+        <td><input type="text" inputmode="tel" data-uphone="${esc(u.ref)}" value="${esc(u.person.phone)}" aria-label="Phone for ${esc(u.person.name)}" style="min-width:140px"${u.skipped ? ' disabled' : ''}></td>
+        <td class="small">${state}</td>
+        <td><input type="checkbox" data-uskip="${esc(u.ref)}"${u.skipped ? ' checked' : ''} aria-label="Leave out ${esc(u.person.name)}"></td></tr>`; }).join('')}
+    </tbody></table></div><p class="small muted" style="margin-top:6px">Edits apply to the exported template only. Correct the source list too, so the next cycle starts clean.</p>`;
 }
 
 // ───────── events ─────────
@@ -1510,6 +1582,11 @@ view.addEventListener('click', async (e) => {
   if (t.id === 'acceptTop') { let n = 0; for (const d of needs()) if (d.status === 'review' && d.candidates && d.candidates[0]) { S.aliases[d.aliasKey] = d.candidates[0].code; n++; } saveAliases(); run(); render(); toast(`Accepted ${plural(n, 'suggestion')}`); return; }
   if (t.id === 'moreMenu') { const b = $('savedBox'); b.hidden = !b.hidden; t.setAttribute('aria-expanded', String(!b.hidden)); return; }
   if (t.id === 'expAlias') { saveFile(`microplan-decisions-${(S.tree.nodes.get(S.tree.roots[0]) || {}).name || 'boundaries'}.json`, new Blob([JSON.stringify({ root: S.tree.roots[0], saved: new Date().toISOString(), aliases: S.aliases }, null, 1)], { type: 'application/json' })); return; }
+  if (t.dataset.ack !== undefined) { S.acks.add(t.dataset.ack); render(); return; }
+  if (t.dataset.unack !== undefined) { S.acks.delete(t.dataset.unack); render(); return; }
+  if (t.dataset.toggle !== undefined) { S.open[t.dataset.toggle] = !S.open[t.dataset.toggle]; render(); return; }
+  if (t.dataset.act === 'spread') { S.cfg.liftSingle = true; S.cfg.splitMode = 'even'; S.exportMsg = ''; run(); render(); toast('Totals spread evenly'); return; }
+  if (t.dataset.act === 'unspread') { S.cfg.liftSingle = false; S.cfg.splitMode = 'flag'; S.exportMsg = ''; run(); render(); return; }
   if (t.id === 'dFill') { demoFill(t); return; }
   if (t.id === 'dList') { demoCsv(); return; }
   if (t.id === 'btnFill') { fillAndSave(t); return; }
@@ -1543,6 +1620,13 @@ view.addEventListener('change', async (e) => {
     }
     if (t.value) decide(d, t.value);
     return;
+  }
+  // user fixes on the export step
+  if (t.dataset.uphone !== undefined || t.dataset.uskip !== undefined) {
+    const ref = t.dataset.uphone ?? t.dataset.uskip;
+    const ed = S.userEdits[ref] = S.userEdits[ref] || {};
+    if (t.dataset.uphone !== undefined) ed.phone = t.value.trim(); else ed.skip = t.checked;
+    S.exportMsg = ''; run(); render(); return;
   }
   // demo settings
   if (S.mode === 'demo' && S.demo) {
@@ -1586,7 +1670,7 @@ async function fillAndSave(btn) {
   try {
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(S.tplBuf.slice(0));
     const R = S.res;
-    const users = R.users.filter((u) => u.code && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
+    const users = R.users.filter((u) => u.code && !u.skipped && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
     const targetMap = Object.fromEntries(Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null));
     const log = await MPW.fillTemplate(wb, { tree: S.tree, agg: R.agg, targetMap, splitMode: S.cfg.splitMode, users, employmentType: S.cfg.empType });
     const buf = await wb.xlsx.writeBuffer();
@@ -1617,15 +1701,15 @@ function saveReport() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(miss), 'No target');
   }
   if (R.users.length) {
-    const u = [['Sheet', 'Row', 'Name', 'Phone (as given)', 'Phone (written)', 'Phone check', 'Designation', 'Role', 'Boundary code', 'Facility path']];
-    for (const x of R.users) u.push([x.sheet, x.row, x.person.name, x.person.phone, x.phoneNorm.ok ? x.phoneNorm.value : '', x.phoneNorm.ok ? 'ok' : x.phoneNorm.reason, x.person.role, x.role, x.code || '', x.code ? T.nodes.get(x.code).path.join(' > ') : (x.path || []).map((p) => p.name).join(' > ') + ' (not matched)']);
+    const u = [['Sheet', 'Row', 'Name', 'Phone (as given)', 'Phone (written)', 'Phone check', 'Left out', 'Designation', 'Role', 'Boundary code', 'Facility path']];
+    for (const x of R.users) u.push([x.sheet, x.row, x.person.name, x.givenPhone, x.phoneNorm.ok ? x.phoneNorm.value : '', x.phoneNorm.ok ? 'ok' : x.phoneNorm.reason, x.skipped ? 'yes' : '', x.person.role, x.role, x.code || '', x.code ? T.nodes.get(x.code).path.join(' > ') : (x.path || []).map((p) => p.name).join(' > ') + ' (not matched)']);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(u), 'Users');
   }
   saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_match_report.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
 }
 
 function clearAll() {
-  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '' });
+  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', userEdits: {}, acks: new Set(), open: {} });
   S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true };
 }
 
