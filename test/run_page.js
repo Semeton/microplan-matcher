@@ -44,19 +44,32 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
   click('[data-nav="4"]');
   console.log('[4 Export]', txt(d.querySelector('.intro')));
   console.log('   checks:', [...d.querySelectorAll('.facts .fact .t')].map((t) => t.childNodes[0].textContent.trim()).join(' | '));
-  // resolve problems in place
+  // resolve problems by editing the affected rows
   const fire = (el, v) => { if (v !== undefined) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } el.dispatchEvent(new w.Event('change', { bubbles: true })); };
-  click('[data-toggle="phones"]');
-  console.log('   phone editor rows:', [...d.querySelectorAll('[data-uphone]')].map((i) => i.dataset.uphone + '=' + i.value).join(', '));
-  fire(d.querySelector('[data-uphone="UserList!4"]'), '08123456790');
-  fire(d.querySelector('[data-uskip="UserList!6"]'), true);
-  console.log('   after phone fixes:', txt(d.querySelector('.intro')), '| phone states:', [...d.querySelectorAll('[data-uphone]')].map((i) => i.closest('tr').cells[2].textContent).join(','));
+  const cellIn = (ref, kind) => [...d.querySelectorAll('[data-cell]')].find((i) => { const [sh, ri, , k] = i.dataset.cell.split('|'); return sh + '!' + (Number(ri) + 1) === ref && k === kind; });
+  console.log('   grid rows shown:', [...d.querySelectorAll('table.grid tbody tr')].length, '| phone cells:', [...d.querySelectorAll('[data-cell$="|p"]')].map((i) => i.value).join(', '));
+  fire(cellIn('UserList!4', 'p'), '08123456790');
+  click('[data-rm="UserList!6"]'); await wait(50);
+  for (const k of ['Near-duplicate names', 'HF without OIC']) click(`[data-toggle="fix:${k}"]`);
+  const dupName = [...d.querySelectorAll('[data-cell$="|h"]')].find((i) => i.value === 'UNG ALI');
+  console.log('   rename input for UNG ALI present:', !!dupName);
+  if (dupName) fire(dupName, 'Ung. Ali');
+  const addBtn = d.querySelector('[data-add*="|oic|"]'); const id = addBtn.dataset.add.split('|')[2];
+  d.getElementById(id + '-n').value = 'Example OIC C'; d.getElementById(id + '-p').value = '08055551234'; addBtn.click(); await wait(50);
+  console.log('   after edits:', txt(d.querySelector('.intro h2')), '| edits:', txt(d.querySelector('.facts .fact .t')).slice(0, 40));
+  click('[data-toggle="__edits"]');
+  console.log('   edit log:', [...d.querySelectorAll('[data-undoedit]')].map((b) => b.parentElement.textContent.replace('Undo', '').trim()).join(' | '));
+  const nBefore = d.querySelectorAll('[data-undoedit]').length;
+  d.querySelector('[data-undoedit]').click(); await wait(50);  // undo most recent (the added OIC)
+  console.log('   after undo:', d.querySelectorAll('[data-undoedit]').length, 'edits (was', nBefore + ')');
+  if (!d.querySelector('[data-add*="|oic|"]')) click('[data-toggle="fix:HF without OIC"]');
+  const addBtn2 = d.querySelector('[data-add*="|oic|"]'); const id2 = addBtn2.dataset.add.split('|')[2];
+  d.getElementById(id2 + '-n').value = 'Example OIC C'; d.getElementById(id2 + '-p').value = '08055551234'; addBtn2.click(); await wait(50);
   click('[data-act="spread"]');
-  console.log('   after spread:', txt(d.querySelector('.intro p')));
-  for (const r of ['HF without CDD', 'HF without OIC', 'Near-duplicate names', 'Special characters']) { const b = d.querySelector(`[data-ack="${r}"]`); if (b) b.click(); }
-  console.log('   after marking OK:', txt(d.querySelector('.intro h2')), '|', txt(d.querySelector('details.edit summary')));
-  const fails = []; if (!/Ready/.test(txt(d.querySelector('.intro h2')))) fails.push('headline not ready');
-  if (fails.length) { console.error('FAIL', fails); process.exit(1); }
+  for (const r of ['HF without CDD', 'HF without OIC', 'Special characters']) { const b = d.querySelector(`[data-ack="${r}"]`); if (b) b.click(); }
+  console.log('   after spread + mark OK:', txt(d.querySelector('.intro h2')), '|', txt(d.querySelector('.intro p')));
+  if (!/Ready/.test(txt(d.querySelector('.intro h2')))) { console.error('FAIL headline', txt(d.querySelector('.intro h2')), [...d.querySelectorAll('.facts .fact .t')].map(txt)); process.exit(1); }
+  click('#dlCorrected'); await until(() => saved.some((s) => s.filename.endsWith('_corrected.xlsx')));
   click('#btnFill'); await until(() => saved.some((s) => s.filename.endsWith('_filled.xlsx')));
   console.log('   ', txt(d.getElementById('expStatus')));
   click('#btnReport'); await until(() => saved.some((s) => s.filename.endsWith('_report.xlsx')));

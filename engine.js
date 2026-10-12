@@ -537,7 +537,7 @@
     for (const m of matched) {
       if (m.status === 'broken') add('error', 'Incomplete path', 'Row has a deeper boundary filled but a parent level blank: ' + m.names.join(' › '), m.sheet + '!' + m.row);
     }
-    // near-duplicate siblings inside the microplan
+    // near-duplicate siblings inside the microplan (variants carry the first row that uses them)
     const sib = new Map();
     for (const m of matched) {
       if (!m.path) continue;
@@ -547,21 +547,35 @@
         if (!sib.has(k)) sib.set(k, new Map());
         const squashed = canon(m.path[i].name).replace(/ /g, '');
         const g = sib.get(k);
-        if (!g.has(squashed)) g.set(squashed, new Set());
-        g.get(squashed).add(m.path[i].name);
+        if (!g.has(squashed)) g.set(squashed, new Map());
+        const v = g.get(squashed);
+        if (!v.has(m.path[i].name)) v.set(m.path[i].name, { name: m.path[i].name, level: m.path[i].level, ref: m.sheet + '!' + m.row, count: 0 });
+        v.get(m.path[i].name).count++;
       }
     }
-    for (const g of sib.values()) for (const names of g.values()) if (names.size > 1) add('warn', 'Near-duplicate names', 'Same boundary written differently: ' + Array.from(names).map((n) => '"' + n + '"').join(' vs '));
+    for (const g of sib.values()) for (const v of g.values()) if (v.size > 1) {
+      const variants = Array.from(v.values());
+      add('warn', 'Near-duplicate names', 'Same boundary written differently: ' + variants.map((x) => '"' + x.name + '"').join(' vs '), variants[0].ref);
+      issues[issues.length - 1].variants = variants;
+    }
 
     if (specialCharsCheck) {
-      const bad = new Set();
-      for (const m of matched) for (const p of m.path || []) if (/[^A-Za-z0-9 \-\/().,'&]/.test(p.name)) bad.add(p.name);
-      if (bad.size) { add('warn', 'Special characters', bad.size + ' boundary names contain special characters (e.g. ' + Array.from(bad).slice(0, 3).map((x) => '"' + x + '"').join(', ') + ')'); issues[issues.length - 1].items = Array.from(bad).sort(); }
+      const bad = new Map();
+      for (const m of matched) for (const p of m.path || []) if (/[^A-Za-z0-9 \-\/().,'&]/.test(p.name)) {
+        if (!bad.has(p.name + '|' + p.level)) bad.set(p.name + '|' + p.level, { name: p.name, level: p.level, ref: m.sheet + '!' + m.row, count: 0 });
+        bad.get(p.name + '|' + p.level).count++;
+      }
+      if (bad.size) {
+        const variants = Array.from(bad.values()).sort((a, b) => a.name.localeCompare(b.name));
+        add('warn', 'Special characters', bad.size + ' boundary names contain special characters (e.g. ' + variants.slice(0, 3).map((x) => '"' + x.name + '"').join(', ') + ')');
+        Object.assign(issues[issues.length - 1], { variants, items: variants.map((x) => x.name) });
+      }
     }
 
     if (agg) {
-      for (const c of agg.conflicts) add('error', 'Duplicate rows', 'Two microplan rows resolve to the same boundary ' + label(tree, c.code) + ' — values were summed', c.rows.join(', '));
-      for (const t of agg.twoLevel.slice(0, 200)) add('error', 'Targets at two levels', 'Targets given for ' + label(tree, t.child) + ' and also for its ancestor ' + label(tree, t.ancestor) + ' — totals will double count');
+      const refOf = new Map(); for (const m of matched) if (m.code && m.values && Object.keys(m.values).length && !refOf.has(m.code)) refOf.set(m.code, m.sheet + '!' + m.row);
+      for (const c of agg.conflicts) { add('error', 'Duplicate rows', 'Two microplan rows resolve to the same boundary ' + label(tree, c.code) + ' — values were summed', c.rows[1]); issues[issues.length - 1].refs = c.rows.slice(); }
+      for (const t of agg.twoLevel.slice(0, 200)) { add('error', 'Targets at two levels', 'Targets given for ' + label(tree, t.child) + ' and also for its ancestor ' + label(tree, t.ancestor) + ' — totals will double count', refOf.get(t.child)); issues[issues.length - 1].refs = [refOf.get(t.ancestor), refOf.get(t.child)].filter(Boolean); }
       // facility totals parked on one child (MC master-data convention: target on the first community)
       const byParent = new Map();
       for (const code of agg.direct.keys()) { const n = tree.nodes.get(code); if (!n || !n.parent) continue; byParent.set(n.parent, (byParent.get(n.parent) || 0) + 1); }
@@ -595,9 +609,10 @@
       if (ctx.hfLevel !== undefined && ctx.hfLevel !== null) {
         const hfs = new Set(); for (const m of matched) if (m.code) { let n = tree.nodes.get(m.code); while (n && n.level > ctx.hfLevel) n = tree.nodes.get(n.parent); if (n && n.level === ctx.hfLevel) hfs.add(n.code); }
         const exO = [], exC = [];
-        for (const hf of hfs) { const cnt = perHF.get(hf) || { oic: 0, cdd: 0 }; if (!cnt.oic) exO.push(label(tree, hf)); if (!cnt.cdd) exC.push(label(tree, hf)); }
-        if (exO.length) { add('warn', 'HF without OIC', exO.length + ' facilities have no OIC / HF worker, e.g. ' + exO.slice(0, 3).join('; ')); issues[issues.length - 1].items = exO.sort(); }
-        if (exC.length) { add('warn', 'HF without CDD', exC.length + ' facilities have no distributor, e.g. ' + exC.slice(0, 3).join('; ')); issues[issues.length - 1].items = exC.sort(); }
+        for (const hf of hfs) { const cnt = perHF.get(hf) || { oic: 0, cdd: 0 }; if (!cnt.oic) exO.push(hf); if (!cnt.cdd) exC.push(hf); }
+        const byLabel = (a, b) => label(tree, a).localeCompare(label(tree, b));
+        if (exO.length) { exO.sort(byLabel); add('warn', 'HF without OIC', exO.length + ' facilities have no OIC / HF worker, e.g. ' + exO.slice(0, 3).map((c) => label(tree, c)).join('; ')); Object.assign(issues[issues.length - 1], { codes: exO, items: exO.map((c) => label(tree, c)), need: 'oic' }); }
+        if (exC.length) { exC.sort(byLabel); add('warn', 'HF without CDD', exC.length + ' facilities have no distributor, e.g. ' + exC.slice(0, 3).map((c) => label(tree, c)).join('; ')); Object.assign(issues[issues.length - 1], { codes: exC, items: exC.map((c) => label(tree, c)), need: 'cdd' }); }
       }
     }
     return issues;
