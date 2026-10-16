@@ -579,7 +579,7 @@
     if (/NIGERIA|_NI\b|\bNG\b|\bNI\b/.test(t)) return '11';
     return 'raw';
   }
-  const placeholder = (d) => /^0?\d0{7,}$/.test(d) || /(\d)\1{7,}/.test(d) || /^0?123456789/.test(d);
+  const placeholder = (d) => /^0?\d0{7,}$/.test(d) || /(\d)\1{7,}/.test(d); // filler such as 0700000000; no prefix rules
   function normPhone(raw, fmt) {
     let d = cellStr(raw).replace(/\.0+$/, '').replace(/[^\d+]/g, '');
     if (!d) return { ok: false, value: '', reason: 'blank' };
@@ -592,19 +592,19 @@
     if (fmt === 'sl' || fmt === 'sl-intl') {
       if (d.startsWith('232') && d.length === 11) d = '0' + d.slice(3);
       if (d.length === 8) d = '0' + d;
-      const ok = /^0[2-9]\d{7}$/.test(d);
+      const ok = /^0\d{8}$/.test(d);
       if (ok && placeholder(d)) return { ok: false, value: d, reason: 'placeholder number' };
-      return { ok, value: ok && fmt === 'sl-intl' ? '+232' + d.slice(1) : d, reason: ok ? '' : 'not a valid Sierra Leone number (0 + 8 digits)' };
+      return { ok, value: ok && fmt === 'sl-intl' ? '+232' + d.slice(1) : d, reason: ok ? '' : `should have 9 digits, 0 + 8 (has ${d.length})` };
     }
     if (d.startsWith('234') && d.length === 13) d = '0' + d.slice(3);
-    if (d.length === 10 && /^[789]/.test(d)) d = '0' + d;
-    const ok = /^0[789][01]\d{8}$/.test(d);
+    // digit count only (no network-prefix check): 11 digits, or 10 with the leading 0 added
+    if (d.length === 10 && !d.startsWith('0')) d = '0' + d;
+    const ok = d.length === 11;
     let value = d;
-    if (ok && fmt === '10') value = d.slice(1);
-    if (ok && fmt === 'intl') value = '+234' + d.slice(1);
-    let reason = ok ? '' : 'not a valid NG mobile number';
-    if (ok && (/^0\d0{9}$/.test(d) || /(\d)\1{7,}/.test(d))) return { ok: false, value, reason: 'placeholder number' };
-    return { ok, value, reason };
+    if (ok && fmt === '10' && d.startsWith('0')) value = d.slice(1);
+    if (ok && fmt === 'intl' && d.startsWith('0')) value = '+234' + d.slice(1);
+    if (ok && placeholder(d)) return { ok: false, value, reason: 'placeholder number' };
+    return { ok, value, reason: ok ? '' : `should have 11 digits (has ${d.length})` };
   }
 
   // ───────────────────────── validation ─────────────────────────
