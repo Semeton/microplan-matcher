@@ -144,6 +144,7 @@ td select { min-width: 200px; }
 .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .settings .field { display: grid; gap: 4px; font-size: 0.85rem; color: var(--muted); }
 .status { font-size: 0.86rem; color: var(--muted); min-height: 1.4em; }
+.status:empty { display: none; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 7px; font-size: 0.88rem; max-width: calc(100% - 32px); z-index: 10; }
 footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
 @media (max-width: 560px) { .wrap { padding-inline: 16px; padding-block: 24px 56px; } .panel { padding: 20px 16px; } .row { grid-template-columns: 1fr; gap: 4px; } }
@@ -156,6 +157,7 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
       <h1>Microplan Matcher</h1>
       <div class="modes" id="modes" role="group" aria-label="Mode">
         <button type="button" data-mode="plan" aria-pressed="true">From microplan</button>
+        <button type="button" data-mode="users" aria-pressed="false">Add users</button>
         <button type="button" data-mode="demo" aria-pressed="false">Demo users</button>
       </div>
     </div>
@@ -204,21 +206,22 @@ const S = {
   aliases: {}, res: null, showAuto: false, exportMsg: '',
   mode: 'plan', demo: null, demoMsg: '',
   mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {},
+  activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' },
 };
 function initDemo() {
   if (!S.tree) { S.demo = null; return; }
   const roles = S.facts.roleOptions.length ? S.facts.roleOptions : (S.demo ? S.demo.rows.map((r) => r.role) : []);
   const hf = S.tree.levelLabels.findIndex((l) => MP.hierKind(l) === 'hf');
   S.demo = {
-    rows: roles.map((role) => ({ role, include: true, level: MP.defaultRoleLevel(S.tree, role), count: 2 })),
+    rows: roles.map((role) => ({ role, include: true, level: MP.defaultRoleLevel(S.tree, role), count: roles.length > 6 ? 1 : 2 })),
     allRoles: { on: true, level: hf >= 0 ? hf : Math.min(S.tree.depth, 4), count: 1 },
-    prefix: 'Demo', phoneStart: '09099990001',
+    prefix: 'Demo', phoneStart: MP.phoneCountry(S.tree) === 'sl' ? '099990001' : '09099990001', activate: 'all',
     empType: S.facts.employmentOptions.find((x) => /temp/i.test(x)) || S.facts.employmentOptions[0] || 'Temporary',
   };
 }
 function demoPlan() {
   const D = S.demo;
-  return { prefix: D.prefix, phoneStart: D.phoneStart, allRoles: D.allRoles.on ? { level: D.allRoles.level, count: D.allRoles.count } : null,
+  return { prefix: D.prefix, phoneStart: D.phoneStart, roleSlots: S.facts.roleSlots || 5, allRoles: D.allRoles.on ? { level: D.allRoles.level, count: D.allRoles.count } : null,
     roles: D.rows.filter((r) => r.include).map((r) => ({ role: r.role, level: r.level, count: r.count })) };
 }
 
@@ -256,9 +259,37 @@ function sheetsFromXLSX(buf, keepBlank) {
 async function loadTemplate(buf, name) {
   S.tplBuf = buf; S.tplName = name;
   S.tree = MP.parseTemplate(sheetsFromXLSX(buf, false));
-  const ewb = new ExcelJS.Workbook(); await ewb.xlsx.load(buf);
+  const ewb = await MPW.loadTemplate(ExcelJS, buf);
   S.facts = MPW.templateFacts(ewb);
+  S.cfg.phoneFmt = MP.phoneCountry(S.tree);
+  S._blist = null; S.add.rows = []; S.add.msg = '';
   loadAliases();
+}
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+/** Fill a fresh copy of the template and save it. Hidden helper columns, dropdowns, protection and existing rows are kept. */
+async function writeTemplate(plan, suffix) {
+  const wb = await MPW.loadTemplate(ExcelJS, S.tplBuf);
+  const log = await MPW.fillTemplate(wb, Object.assign({ tree: S.tree, agg: null, targetMap: {} }, plan));
+  const out = await MPW.saveTemplate(wb);
+  await saveFile(`${S.tplName.replace(/\.xlsx$/i, '')}_${suffix}.xlsx`, new Blob([out], { type: XLSX_MIME }));
+  return log;
+}
+/* ---- facilities: which ones to mark Active ---- */
+/** Facilities whose boundary lies in the area the users / microplan cover (same branch, above or below). */
+function areaSet(codes) {
+  const used = new Set(codes.filter(Boolean)); const up = MPW.withAncestors(S.tree, used);
+  return S.facts.facilities.filter((f) => { if (up.has(f.code)) return true; let n = S.tree.nodes.get(f.code); while (n) { if (used.has(n.code)) return true; n = n.parent ? S.tree.nodes.get(n.parent) : null; } return false; }).map((f) => f.code);
+}
+function activation(mode, codes) { return mode === 'all' ? 'all' : mode === 'used' ? new Set(areaSet(codes)) : null; }
+function activationField(id, mode, codes, label) {
+  const F = S.facts; if (!F.facilityCount) return '';
+  const inArea = new Set(areaSet(codes)); const nArea = F.facilities.filter((f) => inArea.has(f.code)).length;
+  return `<label class="field">${label || 'Facilities to mark Active'}<select id="${id}">${opt('used', `In this area (${fmt(nArea)} of ${fmt(F.facilityCount)})`, mode)}${opt('all', `All ${fmt(F.facilityCount)}`, mode)}${opt('leave', `Leave as they are (${fmt(F.facilityActive)} active)`, mode)}</select></label>`;
+}
+const phoneDigits = (v) => String(v == null ? '' : v).replace(/\.0+$/, '').replace(/\D/g, '').slice(-8); // last 8 digits: same number with or without 0 / country code
+function phoneOptions(cur) {
+  return opt('11', 'Nigeria · 08031234567', cur) + opt('10', 'Nigeria · 8031234567', cur) + opt('intl', 'Nigeria · +2348031234567', cur)
+    + opt('sl', 'Sierra Leone · 076123456', cur) + opt('sl-intl', 'Sierra Leone · +23276123456', cur) + opt('raw', 'Keep digits as typed', cur);
 }
 async function loadMicroplan(buf, name) {
   S.mpName = name; S.mpOrig = sheetsFromXLSX(buf, true);
@@ -311,11 +342,11 @@ function setupUserSheet(keepPerson) {
 
 // ───────── matching ─────────
 function run() {
-  if (!S.tree || !S.cfg.sheet) { S.res = null; return; }
-  const a = A(S.cfg.sheet);
+  if (!S.tree || (!S.cfg.sheet && !S.cfg.userSheet)) { S.res = null; return; }
+  const a = S.cfg.sheet ? A(S.cfg.sheet) : null;
   const valueCols = Array.from(new Set(Object.values(S.cfg.targetMap).filter((v) => v !== '' && v != null).map(Number)));
   const recs = []; const seen = new Set();
-  for (const name of [S.cfg.sheet].concat(S.cfg.extra)) {
+  for (const name of a ? [S.cfg.sheet].concat(S.cfg.extra) : []) {
     const an = A(name); const sh = S.mpSheets.find((s) => s.name === name);
     const primary = name === S.cfg.sheet;
     const lm = primary ? S.cfg.levelMap : remapByLabel(an, a, S.cfg.levelMap);
@@ -339,8 +370,11 @@ function run() {
     });
   }
   const hfLevel = S.tree.levelLabels.findIndex((l) => MP.hierKind(l) === 'hf');
-  const valueLabels = Object.fromEntries(a.cols.map((c) => [c.c, c.label]));
+  const valueLabels = a ? Object.fromEntries(a.cols.map((c) => [c.c, c.label])) : {};
   const issues = MP.validate({ tree: S.tree, matched, agg, valueCols, valueLabels, users: users.filter((u) => !u.skipped), hfLevel: hfLevel >= 0 ? hfLevel : null, specialCharsCheck: true });
+  // people already in the template (adding to a filled template): the console rejects a phone used twice
+  const have = new Map(S.facts.existingUsers.filter((u) => phoneDigits(u.phone)).map((u) => [phoneDigits(u.phone), u]));
+  for (const u of users) { const hit = u.phoneNorm.ok && have.get(phoneDigits(u.phoneNorm.value)); if (hit) { u.phoneNorm = Object.assign({}, u.phoneNorm, { ok: false, reason: `already in the template (${hit.name}, row ${hit.row})` }); issues.push({ severity: 'error', rule: 'Phone already in template', message: `${u.person.name}: ${u.phoneNorm.value || u.person.phone} is already used by ${hit.name} (template row ${hit.row})`, ref: u.ref }); } }
   const dmap = new Map();
   for (const d of decisions.concat(uDecisions)) { const e = dmap.get(d.key); if (e) { e.count += d.count; e.rows = e.rows.concat(d.rows).slice(0, 5); } else dmap.set(d.key, Object.assign({}, d)); }
   S.res = { matched, decisions: Array.from(dmap.values()), agg, users, issues, valueCols };
@@ -354,13 +388,15 @@ function colByLabel(an, primary, c) { const lab = MP.basicNorm((primary.cols[c] 
 
 const needs = () => (S.res ? S.res.decisions.filter((d) => ['review', 'ambiguous', 'unmatched'].includes(d.status) && d.aliasKey) : []);
 const ready = () => !!(S.tree && S.mpSheets.length);
+const usedCodes = () => (S.res ? S.res.matched.map((m) => m.code).concat(S.res.users.map((u) => u.code)) : []);
 
 // ───────── shell ─────────
 function render() {
   document.querySelectorAll('#modes button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === S.mode)));
-  $('steps').hidden = S.mode === 'demo';
-  $('tagline').textContent = S.mode === 'demo' ? 'Create test users for every role across the boundary hierarchy, for demos and UAT.' : 'Turn a microplan into a filled DIGIT HCM unified template.';
+  $('steps').hidden = S.mode !== 'plan';
+  $('tagline').textContent = { demo: 'Create test users for every role across the boundary hierarchy, for demos and UAT.', users: 'Add people to a unified template, including one that already has users.', plan: 'Turn a microplan into a filled DIGIT HCM unified template.' }[S.mode];
   if (S.mode === 'demo') { $('view').innerHTML = viewDemo(); return; }
+  if (S.mode === 'users') { $('view').innerHTML = viewAdd(); return; }
   const can ={ 1: true, 2: ready(), 3: ready() && !!S.res, 4: ready() && !!S.res };
   document.querySelectorAll('#steps button').forEach((b) => {
     const n = Number(b.dataset.go);
@@ -371,11 +407,11 @@ function render() {
 }
 function go(n) { S.step = n; render(); window.scrollTo({ top: 0 }); }
 $('steps').addEventListener('click', (e) => { const b = e.target.closest('button[data-go]'); if (b && !b.disabled) go(Number(b.dataset.go)); });
-$('modes').addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (!b) return; S.mode = b.dataset.mode; if (S.mode === 'demo' && S.tree && !S.demo) initDemo(); render(); });
+$('modes').addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (!b) return; S.mode = b.dataset.mode; if (S.mode === 'demo' && S.tree && !S.demo) initDemo(); if (S.mode === 'users' && S.tree && !S.add.rows.length) addRow(); render(); });
 
 // ───────── demo users ─────────
 function viewDemo() {
-  const tplMeta = S.tree ? `${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')} · ${plural(S.facts.roleOptions.length, 'role')} in the template` : '';
+  const tplMeta = S.tree ? `${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')} · ${plural(S.facts.roleOptions.length, 'role')} in the template` + (S.facts.existingUsers.length ? ` · ${plural(S.facts.existingUsers.length, 'user')} already` : '') : '';
   let h = `<div class="intro"><h2>Demo users</h2><p class="muted small">Only the console template is needed. Users are spread across different branches of the hierarchy so each demo login sees a different area.</p></div>
     <div class="files">${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}</div>
     <div class="status" role="status">${esc(S.busy)}</div>`;
@@ -384,11 +420,12 @@ function viewDemo() {
   const lvlOpts = (cur) => S.tree.levelLabels.map((l, i) => opt(i, l, cur)).join('');
   const users = MP.demoUsers(S.tree, demoPlan());
   const nB = new Set(users.map((u) => u.code)).size;
+  const slots = S.facts.roleSlots || 5, nTicked = D.rows.filter((r) => r.include).length;
   h += `<div class="tbl"><table class="demo-table"><thead><tr><th>Role</th><th>Placed at</th><th>How many</th></tr></thead><tbody>
     ${D.rows.map((r, i) => `<tr class="${r.include ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" data-dinc="${i}" ${r.include ? 'checked' : ''}> ${esc(r.role)}</label></td>
       <td><select data-dlvl="${i}" aria-label="Level for ${esc(r.role)}">${lvlOpts(r.level)}</select></td>
       <td><input type="number" min="0" max="50" data-dcnt="${i}" value="${r.count}" aria-label="How many ${esc(r.role)} users"></td></tr>`).join('')}
-    <tr class="${D.allRoles.on ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" id="dAllOn" ${D.allRoles.on ? 'checked' : ''}> One user with all ticked roles</label></td>
+    <tr class="${D.allRoles.on ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" id="dAllOn" ${D.allRoles.on ? 'checked' : ''}> ${nTicked > slots ? `Users holding several ticked roles (up to ${slots} each, ${Math.ceil(nTicked / slots)} per place)` : 'One user with all ticked roles'}</label></td>
       <td><select id="dAllLvl" aria-label="Level for all-roles users">${lvlOpts(D.allRoles.level)}</select></td>
       <td><input type="number" min="0" max="50" id="dAllCnt" value="${D.allRoles.count}" aria-label="How many all-roles users"></td></tr>
     </tbody></table></div>
@@ -397,11 +434,12 @@ function viewDemo() {
       <label class="field">Name prefix<input type="text" id="dPrefix" value="${esc(D.prefix)}"></label>
       <label class="field">First phone number<input type="text" id="dPhone" value="${esc(D.phoneStart)}" inputmode="numeric"></label>
       <label class="field">Employment type${S.facts.employmentOptions.length ? `<select id="dEmp">${S.facts.employmentOptions.map((x) => opt(x, x, D.empType)).join('')}</select>` : `<input type="text" id="dEmp" value="${esc(D.empType)}">`}</label>
+      ${activationField('dAct', D.activate, users.map((u) => u.code))}
     </div>
     <p class="muted small">Phones count up from the first number. Use a range your team controls if the app sends OTPs or SMS.</p>
     <div class="facts">
       <div class="fact"><span class="mark ok">✓</span><div class="t">${plural(users.length, 'user')} across ${plural(nB, 'boundary', 'boundaries')}
-        <div class="d">${users.slice(0, 6).map((u) => `${esc(u.name)} — ${u.roles.length > 1 ? plural(u.roles.length, 'role') : esc(u.roles[0])} — ${esc(u.path.slice(1).join(' › ') || u.path[0])}`).join('<br>')}${users.length > 6 ? `<br>…and ${fmt(users.length - 6)} more` : ''}</div></div></div>
+        <div class="d">${users.slice(0, 6).map((u) => `${esc(u.name)} — ${u.roles.length > 1 ? plural(u.roles.length, 'role') : esc(u.roles[0])} — ${esc(u.label)}`).join('<br>')}${users.length > 6 ? `<br>…and ${fmt(users.length - 6)} more` : ''}</div></div></div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="button" class="primary" id="dFill"${users.length ? '' : ' disabled'}>Download template with demo users</button>
@@ -414,11 +452,8 @@ async function demoFill(btn) {
   btn.disabled = true; $('demoStatus').textContent = 'Writing the template…'; await tick();
   try {
     const users = MP.demoUsers(S.tree, demoPlan());
-    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(S.tplBuf.slice(0));
-    const log = await MPW.fillTemplate(wb, { tree: S.tree, agg: null, targetMap: {}, users: users.map((u) => ({ code: u.code, name: u.name, phone: u.phone, roles: u.roles })), employmentType: S.demo.empType });
-    const buf = await wb.xlsx.writeBuffer();
-    await saveFile(`${S.tplName.replace(/\.xlsx$/i, '')}_demo_users.xlsx`, new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-    S.demoMsg = `Added ${plural(log.usersWritten, 'user')}.` + (log.roleOverflow ? ` ${plural(log.roleOverflow, 'user')} had more roles than the template has role columns; extra roles were left off.` : '');
+    const log = await writeTemplate({ users: users.map((u) => ({ code: u.code, name: u.name, phone: u.phone, roles: u.roles })), employmentType: S.demo.empType, activate: activation(S.demo.activate, users.map((u) => u.code)) }, 'demo_users');
+    S.demoMsg = `Added ${plural(log.usersWritten, 'user')}.` + (log.existingUsers ? ` ${plural(log.existingUsers, 'user')} already there were kept.` : '') + (log.facilitiesActivated ? ` ${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '');
   } catch (err) { console.error(err); S.demoMsg = 'Could not write the template. ' + (err && err.message || err); }
   $('demoStatus').textContent = S.demoMsg; btn.disabled = false;
 }
@@ -426,11 +461,157 @@ function demoCsv() {
   const users = MP.demoUsers(S.tree, demoPlan());
   const q = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const lines = [['Name', 'Phone', 'Roles', 'Boundary code', 'Boundary'].map(q).join(',')]
-    .concat(users.map((u) => [u.name, u.phone, u.roles.join('; '), u.code, u.path.join(' > ')].map(q).join(',')));
+    .concat(users.map((u) => [u.name, u.phone, u.roles.join('; '), u.code, u.label].map(q).join(',')));
   saveFile(`${S.tplName.replace(/\.xlsx$/i, '')}_demo_users.csv`, new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv' }));
 }
 function nav(back, nextLabel, nextOk) {
   return `<div class="nav">${back ? `<button type="button" class="quiet" data-nav="${back}">← Back</button>` : '<span></span>'}${nextLabel ? `<button type="button" class="primary" data-nav="${S.step + 1}"${nextOk ? '' : ' disabled'}>${nextLabel}</button>` : ''}</div>`;
+}
+
+// ───────── add users (to an empty or already-filled template) ─────────
+/** Every boundary as one searchable line: “Name · Parent · Grandparent (Level)”. */
+function boundaryList() {
+  if (S._blist) return S._blist;
+  const T = S.tree; const items = [];
+  for (const n of T.nodes.values()) {
+    if (n.synthetic) continue;
+    const up = (n.dpath || n.path).slice(0, -1).reverse().slice(0, 2);
+    items.push({ value: `${n.name}${up.length ? ' · ' + up.join(' · ') : ''} (${T.levelLabels[n.level] || 'level ' + n.level})`, code: n.code });
+  }
+  const seen = new Map(); for (const it of items) { const k = seen.get(it.value) || 0; seen.set(it.value, k + 1); if (k) it.value += ` #${k + 1}`; }
+  items.sort((a, b) => a.value.localeCompare(b.value));
+  S._blist = { items, byValue: new Map(items.map((i) => [i.value.toLowerCase(), i.code])), byCode: new Map(items.map((i) => [i.code, i.value])),
+    html: `<datalist id="bl-all">${items.map((o) => `<option value="${esc(o.value)}"></option>`).join('')}</datalist>` };
+  return S._blist;
+}
+/** Typed or pasted boundary → code: a list entry, a code, a name (optionally with parents “Ward › Facility”), or a close spelling. */
+function resolveBoundary(text) {
+  const t = String(text || '').trim(); if (!t) return { code: null, reason: 'no boundary' };
+  const L = boundaryList(); const T = S.tree;
+  const hit = L.byValue.get(t.toLowerCase()); if (hit) return { code: hit };
+  if (T.nodes.has(t)) return { code: t };
+  const segs = t.split(/\s*(?:›|>|\/|·|#)\s*/).filter(Boolean);
+  const last = segs[segs.length - 1]; const want = MP.canon(last); const ctx = segs.slice(0, -1).map((x) => MP.canon(x.replace(/\s*\([^)]*\)$/, '')));
+  const fits = (n) => ctx.every((c) => (n.dpath || n.path).slice(0, -1).concat(n.path.slice(0, -1)).some((p) => MP.canon(p) === c));
+  const pool = Array.from(T.nodes.values()).filter((n) => !n.synthetic && fits(n));
+  const same = pool.filter((n) => MP.canon(n.name) === want || MP.canon(n.path[n.path.length - 1]) === want);
+  if (same.length === 1) return { code: same[0].code };
+  if (same.length > 1) return { code: null, reason: `${same.length} places are called “${last}”, pick one from the list` };
+  const scored = pool.map((n) => ({ n, s: MP.similarity(last, n.name) })).sort((a, b) => b.s - a.s);
+  if (scored[0] && scored[0].s >= 0.9 && (!scored[1] || scored[0].s - scored[1].s >= 0.05)) return { code: scored[0].n.code, note: `“${last}” read as ${scored[0].n.name}` };
+  return { code: null, reason: scored[0] && scored[0].s >= 0.7 ? `boundary not found (closest: ${scored.slice(0, 2).map((x) => x.n.name).join(', ')})` : 'boundary not found in the template' };
+}
+function addRow(init) { const r = Object.assign({ id: ++S.add.seq, name: '', phone: '', roles: [], badRoles: [], btext: '', code: null, breason: '', note: '' }, init || {}); S.add.rows.push(r); return r; }
+function setBoundary(r, text) { const res = resolveBoundary(text); r.code = res.code; r.breason = res.reason || ''; r.note = res.note || ''; r.btext = r.code ? boundaryList().byCode.get(r.code) || text : text; }
+function roleFrom(text) {
+  const opts = S.facts.roleOptions; const t = String(text || '').trim(); if (!t) return '';
+  if (!opts.length) return t;
+  const norm = (x) => x.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+  return opts.find((o) => norm(o) === norm(t)) || MPW.guessRole(t, opts) || '';
+}
+function setRoles(r, text) {
+  r.roles = []; r.badRoles = [];
+  for (const p of String(text || '').split(/[;|\/]+|,\s*/).map((x) => x.trim()).filter(Boolean)) { const x = roleFrom(p); if (!x) r.badRoles.push(p); else if (!r.roles.includes(x)) r.roles.push(x); }
+  r.roles = r.roles.slice(0, S.facts.roleSlots || 5);
+}
+const addEmp = () => S.add.empType || S.facts.employmentOptions.find((x) => /temp/i.test(x)) || S.facts.employmentOptions[0] || 'Temporary';
+const isBlankRow = (r) => !(r.name || r.phone || r.btext || r.roles.length);
+function addChecks() {
+  const have = new Map(S.facts.existingUsers.filter((u) => phoneDigits(u.phone)).map((u) => [phoneDigits(u.phone), u]));
+  const seen = new Map(); const problems = new Map();
+  const live = S.add.rows.filter((r) => !isBlankRow(r));
+  for (const r of live) {
+    const p = []; const ph = MP.normPhone(r.phone, S.cfg.phoneFmt); r.phoneOut = ph.ok ? ph.value : '';
+    if (!r.name.trim()) p.push('no name');
+    if (!ph.ok) p.push(ph.reason === 'blank' ? 'no phone' : ph.reason);
+    else { const d = phoneDigits(ph.value); const ex = have.get(d);
+      if (ex) p.push(`phone already used by ${ex.name} (template row ${ex.row})`); else if (seen.has(d)) p.push(`same phone as ${seen.get(d).name || 'another new row'}`); else seen.set(d, r); }
+    if (!r.code) p.push(r.breason || 'no boundary');
+    if (!r.roles.filter(Boolean).length) p.push('no role');
+    if (r.badRoles.length) p.push(`not a role in this template: ${r.badRoles.join(', ')}`);
+    problems.set(r.id, p);
+  }
+  return { live, problems, good: live.filter((r) => !problems.get(r.id).length) };
+}
+function viewAdd() {
+  const F = S.facts;
+  const tplMeta = S.tree ? `${plural(F.existingUsers.length, 'user')} already · ${plural(F.roleOptions.length, 'role')} · ${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')}` : '';
+  let h = `<div class="intro"><h2>Add users</h2><p class="muted small">Use an empty template or one that already has users. New people go after the existing rows; nothing already in the template changes.</p></div>
+    <div class="files">${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}</div>
+    <div class="status" role="status">${esc(S.busy)}</div>`;
+  if (!S.tree) return h;
+  if (!F.userSheet) return h + '<p class="muted">This template has no user sheet.</p>';
+  if (!S.add.rows.length) addRow();
+  const C = addChecks(); const L = boundaryList(); const slots = F.roleSlots || 1; const ex = F.existingUsers;
+  if (ex.length) h += `<details class="edit"${S.open.__ex ? ' open' : ''} id="exBox"><summary>${plural(ex.length, 'user')} already in the template</summary>
+    <div class="tbl"><table><thead><tr><th>Row</th><th>Name</th><th>Phone</th><th>Roles</th><th>Boundary</th></tr></thead><tbody>${ex.slice(0, 200).map((u) => `<tr><td class="mono">${u.row}</td><td>${esc(u.name)}</td><td class="mono">${esc(u.phone)}</td><td>${esc(u.roles.join(', '))}</td><td>${esc(S.tree.nodes.has(u.code) ? MP.label(S.tree, u.code) || S.tree.nodes.get(u.code).name : u.code)}</td></tr>`).join('')}</tbody></table></div>${ex.length > 200 ? `<p class="muted small">…and ${fmt(ex.length - 200)} more.</p>` : ''}</details>`;
+  const roleSel = (r, k) => (F.roleOptions.length ? `<select data-arole="${r.id}|${k}" aria-label="Role ${k + 1} for new user ${r.id}"><option value="">${k ? 'No more roles' : 'Choose a role'}</option>${F.roleOptions.map((o) => opt(o, o, r.roles[k] || '')).join('')}</select>`
+    : `<input type="text" data-arole="${r.id}|${k}" value="${esc(r.roles[k] || '')}" placeholder="Role" aria-label="Role ${k + 1}">`);
+  h += `<div class="group-title">New users</div><div class="rowcards">${S.add.rows.map((r, i) => { const pr = C.problems.get(r.id) || []; const nSel = Math.min(slots, r.roles.filter(Boolean).length + 1);
+    return `<div class="rowcard"><div class="rc-head"><span class="rc-ref">New ${i + 1}</span><span class="rc-problem">${esc(pr.join(' · '))}</span>${!pr.length && r.note ? `<span class="small muted">${esc(r.note)}</span>` : ''}<button type="button" class="quiet" data-arm="${r.id}">Remove</button></div>
+      <div class="rc-fields">
+        <label><span class="rc-label">Name</span><input type="text" data-af="${r.id}|name" value="${esc(r.name)}" placeholder="Full name"></label>
+        <label><span class="rc-label">Phone</span><input type="text" data-af="${r.id}|phone" value="${esc(r.phone)}" inputmode="tel"></label>
+        <label style="grid-column:1/-1"><span class="rc-label">Boundary</span><input type="text" list="bl-all" data-af="${r.id}|b" value="${esc(r.btext)}" placeholder="Type a name: ${esc(S.tree.levelLabels.slice(-3).join(', '))}…" autocomplete="off"></label>
+        ${Array.from({ length: nSel }, (_, k) => `<label><span class="rc-label">Role ${k + 1}</span>${roleSel(r, k)}</label>`).join('')}
+      </div></div>`; }).join('')}</div>
+    ${L.html}
+    <div class="choices" style="align-items:center"><button type="button" id="aRow">Add a person</button><button type="button" class="quiet" data-toggle="__paste">${S.open.__paste ? 'Hide paste box' : 'Paste rows'}</button>
+      <label style="position:relative;color:var(--accent);cursor:pointer;padding:9px 6px;font-size:0.9rem;font-weight:500">Upload a list<input type="file" id="fileAddList" accept=".xlsx,.xls,.csv" style="position:absolute;inset:0;opacity:0;cursor:pointer" aria-label="Upload a user list"></label></div>
+    ${S.open.__paste ? `<div class="form"><label class="small muted" for="aPaste">One person per line: name, phone, role, boundary. Copy straight from Excel (tab-separated) or use commas. A header row is fine; several roles can be separated with “;”.</label>
+      <textarea id="aPaste" rows="6" style="font:inherit;font-size:0.88rem;width:100%;border:1px solid var(--line);border-radius:6px;padding:8px;background:var(--surface);color:var(--ink)"></textarea><div><button type="button" id="aPasteGo">Add these rows</button></div></div>` : ''}
+    <div class="settings">
+      <label class="field">Phone numbers written as<select id="aPhone">${phoneOptions(S.cfg.phoneFmt)}</select></label>
+      <label class="field">Employment type${F.employmentOptions.length ? `<select id="aEmp">${F.employmentOptions.map((x) => opt(x, x, addEmp())).join('')}</select>` : `<input type="text" id="aEmp" value="${esc(addEmp())}">`}</label>
+      ${activationField('aAct', S.add.activate, C.good.map((r) => r.code))}
+    </div>
+    <div class="facts"><div class="fact"><span class="mark ${C.live.length > C.good.length ? 'warn' : 'ok'}">${C.live.length > C.good.length ? '!' : '✓'}</span><div class="t">${plural(C.good.length, 'person', 'people')} ready to add${C.live.length > C.good.length ? `<div class="d">${plural(C.live.length - C.good.length, 'row')} with a problem will be left out until fixed.</div>` : ''}</div></div></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button type="button" class="primary" id="aSave"${C.good.length ? '' : ' disabled'}>Download template with ${plural(C.good.length, 'new user')}</button></div>
+    <div class="status" id="addStatus" role="status">${esc(S.add.msg)}</div>`;
+  return h;
+}
+/** Rows from a paste or an uploaded sheet. With recognisable headers the engine matches boundaries level by level;
+ *  otherwise columns are read as name, phone, role, boundary. */
+function importRows(rows, sheetName) {
+  rows = rows.filter((r) => r && r.some((v) => MP.cellStr(v)));
+  if (!rows.length) return 0;
+  S.add.rows = S.add.rows.filter((r) => !isBlankRow(r));
+  const sheet = { name: sheetName, rows };
+  const an = MP.analyseSheet(sheet, S.tree.levelLabels);
+  if (an && an.person && an.person.name && an.cols.filter((c) => c.kind).length >= 1) {
+    const lm = MP.autoLevelMap(an, S.tree);
+    const person = { name: an.person.name.c, phone: an.person.phone ? an.person.phone.c : '', role: an.person.role ? an.person.role.c : '' };
+    const { matched } = MP.matchRecords(S.tree, MP.extractRecords(sheet, an, lm, [], person), S.aliases);
+    let n = 0;
+    for (const m of matched) {
+      if (!m.person || !(m.person.name || m.person.phone)) continue;
+      const r = addRow({ name: MP.cellStr(m.person.name), phone: MP.cellStr(m.person.phone) }); setRoles(r, m.person.role);
+      if (m.code) { r.code = m.code; r.btext = boundaryList().byCode.get(m.code) || m.code; } else setBoundary(r, (m.path || []).map((p) => p.name).join(' › '));
+      n++;
+    }
+    if (n) return n;
+  }
+  let order = { name: 0, phone: 1, role: 2, b: 3 };
+  const hdr = rows[0].map((v) => MP.cellStr(v).toLowerCase()); const find = (re) => hdr.findIndex((x) => re.test(x));
+  if (find(/name/) >= 0 && find(/phone|mobile|tel/) >= 0) { order = { name: find(/name/), phone: find(/phone|mobile|tel/), role: find(/role|designation|position|cadre/), b: find(/boundary|facility|ward|community|location|area|code|settlement|village/) }; rows = rows.slice(1); }
+  for (const row of rows) { const g = (k) => (order[k] >= 0 ? MP.cellStr(row[order[k]]) : ''); const r = addRow({ name: g('name'), phone: g('phone') }); setRoles(r, g('role')); setBoundary(r, g('b')); }
+  return rows.length;
+}
+function parsePaste(text) {
+  const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim());
+  const tab = lines.some((l) => l.includes('\t'));
+  return lines.map((l) => (tab ? l.split('\t') : l.split(',')).map((x) => x.trim()));
+}
+async function addSave(btn) {
+  btn.disabled = true; $('addStatus').textContent = 'Writing the template…'; await tick();
+  try {
+    const C = addChecks();
+    const users = C.good.map((r) => ({ code: r.code, name: r.name.trim(), phone: r.phoneOut, roles: r.roles.filter(Boolean) }));
+    const log = await writeTemplate({ users, employmentType: addEmp(), activate: activation(S.add.activate, users.map((u) => u.code)) }, 'with_users');
+    S.add.msg = `Added ${plural(log.usersWritten, 'user')}${log.existingUsers ? ` after the ${fmt(log.existingUsers)} already there` : ''}.`
+      + (log.facilitiesActivated ? ` ${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '') + (C.live.length > C.good.length ? ` ${plural(C.live.length - C.good.length, 'row')} with problems left out.` : '');
+  } catch (err) { console.error(err); S.add.msg = 'Could not write the template. ' + (err && err.message || err); }
+  $('addStatus').textContent = S.add.msg; btn.disabled = false;
 }
 
 // ───────── 1 · files ─────────
@@ -445,8 +626,9 @@ function fileBox(id, accept, loaded, name, meta, prompt, ic) {
 function viewFiles() {
   const tplMeta = S.tree ? `${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')} · ${S.tree.levelLabels.length} levels` : '';
   const a = S.cfg.sheet && A(S.cfg.sheet);
-  const mpMeta = S.mpSheets.length ? (a ? `${plural(a.nRows, 'row')} on “${esc(S.cfg.sheet)}”` : 'No sheet with State / LGA / Ward columns found') : '';
-  return `<div class="intro"><h2>Add the two files</h2><p class="muted small">The template comes from the console for this campaign. The microplan can be a v4.1 microplan, a Master Data sheet, or a list with users.</p></div>
+  const ua0 = S.cfg.userSheet && A(S.cfg.userSheet);
+  const mpMeta = S.mpSheets.length ? (a ? `${plural(a.nRows, 'row')} on “${esc(S.cfg.sheet)}”` : ua0 ? `${plural(ua0.nRows, 'person', 'people')} on “${esc(S.cfg.userSheet)}”, no targets` : 'No sheet with State / LGA / Ward columns found') : '';
+  return `<div class="intro"><h2>Add the two files</h2><p class="muted small">The template comes from the console for this campaign. It can already hold users; new ones are added after them. The microplan can be a v4.1 microplan, a Master Data sheet, or just a user list.</p></div>
     <div class="files">
       ${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}
       ${fileBox('fileMp', '.xlsx,.xls,.xlsm,.csv', !!S.mpSheets.length, S.mpName, mpMeta, 'Microplan', 'MP')}
@@ -460,35 +642,37 @@ function viewFiles() {
 function opt(v, label, sel) { return `<option value="${esc(v)}"${String(sel) === String(v) ? ' selected' : ''}>${esc(label)}</option>`; }
 function viewColumns() {
   const a = A(S.cfg.sheet);
-  if (!a) return `<div class="intro"><h2>No boundary columns found</h2><p class="muted small">None of the sheets has State, LGA, Ward or Health Facility columns. Check the microplan file.</p></div>${nav(1)}`;
-  const mappedLv = Object.values(S.cfg.levelMap).map((l) => S.tree.levelLabels[l]);
-  const tk = S.facts.targetKeys; const tFilled = tk.filter((t) => S.cfg.targetMap[t.key] !== '' && S.cfg.targetMap[t.key] != null);
   const ua = A(S.cfg.userSheet);
+  if (!a && !ua) return `<div class="intro"><h2>No boundary columns found</h2><p class="muted small">None of the sheets has State, LGA, Ward or Health Facility columns. Check the microplan file.</p></div>${nav(1)}`;
+  const mappedLv = Object.values(a ? S.cfg.levelMap : S.cfg.userLevelMap).map((l) => S.tree.levelLabels[l]);
+  const tk = S.facts.targetKeys; const tFilled = tk.filter((t) => S.cfg.targetMap[t.key] !== '' && S.cfg.targetMap[t.key] != null);
   const unmappedRoles = Object.values(S.cfg.roleMap).filter((r) => !r).length;
   const fact = (state, title, detail) => `<div class="fact"><span class="mark ${state}">${state === 'ok' ? '✓' : '!'}</span><div class="t">${title}${detail ? `<div class="d">${detail}</div>` : ''}</div></div>`;
   const facts = [
-    fact('ok', `Rows from <b>${esc(S.cfg.sheet)}</b>`, plural(a.nRows, 'row')),
+    a ? fact('ok', `Rows from <b>${esc(S.cfg.sheet)}</b>`, plural(a.nRows, 'row')) : fact('ok', 'User list only', 'No target rows in this file; only users are added'),
     fact(mappedLv.length >= 2 ? 'ok' : 'err', 'Boundary columns', mappedLv.length ? mappedLv.join(' › ') : 'None mapped'),
-    tk.length ? fact(tFilled.length === tk.length ? 'ok' : 'warn', 'Targets', tFilled.length ? tFilled.map((t) => `${esc(t.label)} ← ${esc((a.cols[S.cfg.targetMap[t.key]] || {}).label)}`).join('<br>') + (tFilled.length < tk.length ? `<br>${tk.length - tFilled.length} template column${tk.length - tFilled.length > 1 ? 's' : ''} left blank` : '') : 'No target columns matched')
+    !a ? '' : tk.length ? fact(tFilled.length === tk.length ? 'ok' : 'warn', 'Targets', tFilled.length ? tFilled.map((t) => `${esc(t.label)} ← ${esc((a.cols[S.cfg.targetMap[t.key]] || {}).label)}`).join('<br>') + (tFilled.length < tk.length ? `<br>${tk.length - tFilled.length} template column${tk.length - tFilled.length > 1 ? 's' : ''} left blank` : '') : 'No target columns matched')
       : fact('ok', 'Targets', 'This template has no target sheet'),
     ua ? fact(unmappedRoles ? 'warn' : 'ok', `Users from <b>${esc(S.cfg.userSheet)}</b>`, Object.entries(S.cfg.roleMap).map(([d, r]) => `${esc(d)} → ${r ? esc(r) : '<i>no role chosen</i>'}`).join(' · ') || 'No designation column')
        : fact('ok', 'Users', 'No user list in this microplan'),
+    S.facts.existingUsers.length ? fact('ok', `${plural(S.facts.existingUsers.length, 'user')} already in the template`, 'New users are added after them; existing rows are not changed') : '',
   ].join('');
   return `<div class="intro"><h2>Check the columns</h2><p class="muted small">Detected automatically. Open the editor only if something below is wrong.</p></div>
     <div class="facts">${facts}</div>
-    <details class="edit"${S._editOpen ? ' open' : ''} id="editMap"><summary>Edit columns</summary>${mappingForm(a, ua)}</details>
+    <details class="edit"${S._editOpen ? ' open' : ''} id="editMap"><summary>Edit columns</summary>${mappingForm(a || ua, ua, !a)}</details>
     ${nav(1, 'Match names', mappedLv.length >= 2)}`;
 }
-function mappingForm(a, ua) {
+function mappingForm(a, ua, usersOnly) {
   const lv = (cur) => `<option value="">Ignore</option>` + S.tree.levelLabels.map((l, i) => opt(i, l, cur)).join('');
+  const lmap = usersOnly ? S.cfg.userLevelMap : S.cfg.levelMap;
   const numCols = a.cols.filter((c) => c.numeric && !c.kind);
-  const hierCols = a.cols.filter((c) => (c.kind || S.cfg.levelMap[c.c] !== undefined) && c.duplicateOf === undefined);
+  const hierCols = a.cols.filter((c) => (c.kind || lmap[c.c] !== undefined) && c.duplicateOf === undefined);
   const sheets = S.analyses.filter((x) => x && x.cols.filter((c) => c.kind).length >= 2);
   let h = `<div class="form">
-    <div class="row"><label for="selSheet">Sheet with boundary rows</label><select id="selSheet">${sheets.map((x) => opt(x.sheet, `${x.sheet} (${fmt(x.nRows)} rows)`, S.cfg.sheet)).join('')}</select></div>
-    <div class="group-title">Boundary levels</div>
-    ${hierCols.map((c) => `<div class="row"><label for="lvl-${c.c}">${esc(c.label)} <span class="mono">${MP.colLetter(c.c)}</span></label><select id="lvl-${c.c}" data-lvl="${c.c}">${lv(S.cfg.levelMap[c.c] ?? '')}</select></div>`).join('')}`;
-  if (S.facts.targetKeys.length) {
+    <div class="row"><label for="selSheet">Sheet with boundary rows</label><select id="selSheet">${opt('', 'None (user list only)', S.cfg.sheet || '')}${sheets.map((x) => opt(x.sheet, `${x.sheet} (${fmt(x.nRows)} rows)`, S.cfg.sheet)).join('')}</select></div>
+    <div class="group-title">Boundary levels${usersOnly ? ' in the user list' : ''}</div>
+    ${hierCols.map((c) => `<div class="row"><label for="lvl-${c.c}">${esc(c.label)} <span class="mono">${MP.colLetter(c.c)}</span></label><select id="lvl-${c.c}" data-lvl="${c.c}"${usersOnly ? ' data-ulvl="1"' : ''}>${lv(lmap[c.c] ?? '')}</select></div>`).join('')}`;
+  if (S.facts.targetKeys.length && !usersOnly) {
     h += `<div class="group-title">Targets</div>` + S.facts.targetKeys.map((t, i) => `<div class="row"><label for="tgt-${i}">${esc(t.label)}</label><select id="tgt-${i}" data-tgt="${esc(t.key)}"><option value="">Leave blank</option>${numCols.map((c) => opt(c.c, c.label, S.cfg.targetMap[t.key])).join('')}</select></div>`).join('')
       + `<div class="row"><label for="selSplit">If the template lists smaller areas than the microplan</label><select id="selSplit">${opt('flag', 'Leave those rows blank', S.cfg.splitMode)}${opt('even', 'Split evenly across them', S.cfg.splitMode)}${opt('first', 'Put it all on the first one', S.cfg.splitMode)}</select></div>`;
   }
@@ -499,7 +683,7 @@ function mappingForm(a, ua) {
       <div class="row"><label for="pPhone">Phone column</label><select id="pPhone" data-person="phone">${cols(S.cfg.person.phone)}</select></div>
       <div class="row"><label for="pRole">Designation column</label><select id="pRole" data-person="role">${cols(S.cfg.person.role)}</select></div>`
       + Object.entries(S.cfg.roleMap).map(([d, r], i) => `<div class="row"><label for="role-${i}">“${esc(d)}” becomes</label>${S.facts.roleOptions.length ? `<select id="role-${i}" data-role="${esc(d)}"><option value="">Choose a role</option>${S.facts.roleOptions.map((x) => opt(x, x, r)).join('')}</select>` : `<input type="text" id="role-${i}" data-role="${esc(d)}" value="${esc(r)}">`}</div>`).join('')
-      + `<div class="row"><label for="selPhone">Phone numbers written as</label><select id="selPhone">${opt('11', '08031234567', S.cfg.phoneFmt)}${opt('10', '8031234567', S.cfg.phoneFmt)}${opt('intl', '+2348031234567', S.cfg.phoneFmt)}</select></div>
+      + `<div class="row"><label for="selPhone">Phone numbers written as</label><select id="selPhone">${phoneOptions(S.cfg.phoneFmt)}</select></div>
       <div class="row"><label for="selEmp">Employment type</label>${S.facts.employmentOptions.length ? `<select id="selEmp">${S.facts.employmentOptions.map((x) => opt(x, x, S.cfg.empType)).join('')}</select>` : `<input type="text" id="selEmp" value="${esc(S.cfg.empType)}">`}</div>
       <label class="check"><input type="checkbox" id="skipBad"${S.cfg.skipBadUsers ? ' checked' : ''}> Leave out users with a bad phone number or an unknown facility</label>`;
   }
@@ -510,11 +694,12 @@ function mappingForm(a, ua) {
 const STATUS_LABEL = { exact: 'Exact', alias: 'Your choice', fuzzy: 'Close match', review: 'Needs review', ambiguous: 'Two possible', unmatched: 'Not found', skipped: 'Skipped' };
 function viewNames() {
   const R = S.res; const q = needs();
-  const resolved = R.matched.filter((m) => m.code).length; const total = R.matched.length || 1;
+  const pool = R.matched.length ? R.matched : R.users;
+  const resolved = pool.filter((m) => m.code).length; const total = pool.length || 1;
   const pct = 100 * resolved / total;
   const auto = R.decisions.filter((d) => d.status === 'fuzzy' || d.status === 'alias' || d.status === 'skipped');
   let h = `<div class="intro"><h2>Resolve names</h2><p class="muted small">Each name is decided once and remembered for the next cycle.</p></div>
-    <div style="display:grid;gap:10px"><div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><span class="big">${pct.toFixed(pct === 100 ? 0 : 1)}%</span><span class="muted">of ${plural(R.matched.length, 'row')} matched to a boundary</span></div>
+    <div style="display:grid;gap:10px"><div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><span class="big">${pct.toFixed(pct === 100 ? 0 : 1)}%</span><span class="muted">of ${plural(pool.length, R.matched.length ? 'row' : 'person', R.matched.length ? null : 'people')} matched to a boundary</span></div>
     <div class="progress"><span style="width:${pct.toFixed(2)}%"></span></div></div>`;
   if (q.length) {
     h += `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><b>${plural(q.length, 'name')} need${q.length === 1 ? 's' : ''} you</b>${q.some((d) => d.status === 'review') ? '<button type="button" class="quiet" id="acceptTop">Accept all suggestions</button>' : ''}</div>
@@ -587,7 +772,7 @@ function searchOptions(d) {
 }
 
 // ───────── 4 · export ─────────
-const PHONE_RULES = ['Phone', 'Duplicate phone'];
+const PHONE_RULES = ['Phone', 'Duplicate phone', 'Phone already in template'];
 const ROWS_SHOWN = 8;
 function viewExport() {
   const R = S.res;
@@ -603,9 +788,9 @@ function viewExport() {
   const nErr = active.filter((g) => g.sev === 'error').length, nWarn = active.length - nErr;
   const headline = nErr ? `${plural(nErr, 'problem')} to fix before upload` : nWarn ? `Ready, with ${plural(nWarn, 'thing')} to check` : 'Ready to upload';
   const lines = [
-    `${fmt(R.matched.length - unresolved)} of ${plural(R.matched.length, 'row')} matched`,
+    R.matched.length ? `${fmt(R.matched.length - unresolved)} of ${plural(R.matched.length, 'row')} matched` : null,
     tmap.length ? `${fmt(filled)} of ${fmt(rows)} ${esc(S.tree.levelLabels[leaf])} rows get targets` : null,
-    S.cfg.userSheet ? `${fmt(willAdd)} of ${plural(R.users.length, 'user')} will be added` : null,
+    S.cfg.userSheet ? `${fmt(willAdd)} of ${plural(R.users.length, 'user')} will be added` + (S.facts.existingUsers.length ? ` after the ${fmt(S.facts.existingUsers.length)} already in the template` : '') : null,
   ].filter(Boolean);
   // row → messages, for the status column in every grid
   S._rowMsgs = new Map();
@@ -619,17 +804,19 @@ function viewExport() {
   return `<div class="intro"><h2>${headline}</h2><p class="muted small">${lines.join(' · ')}</p></div>
     ${active.length || lifted || editsBox ? `<div class="facts">${editsBox}${lifted}${active.map(issueGroup).join('')}</div>` : ''}
     ${acked.length ? `<details class="edit"><summary>${plural(acked.length, 'check')} marked as OK</summary><div class="facts">${acked.map((g) => `<div class="fact"><span class="mark ok">✓</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span><div class="d"><button type="button" class="quiet" data-unack="${esc(g.rule)}">Undo</button></div></div></div>`).join('')}</div></details>` : ''}
+    ${S.facts.facilityCount ? `<div class="settings">${activationField('selAct', S.activate, usedCodes())}</div>` : ''}
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button type="button" class="primary" id="btnFill">Download filled template</button>
       <button type="button" class="quiet" id="btnReport">Download report</button>
     </div>
     <div class="status" id="expStatus" role="status">${esc(S.exportMsg)}</div>
-    <p class="muted small">Edits change this run and the corrected microplan, never your original file. Only target cells and new user rows are written to the template.</p>
+    <p class="muted small">Edits change this run and the corrected microplan, never your original file. Only target cells, new user rows and facility status are written to the template; hidden helper columns and dropdowns stay as the console made them.</p>
     ${nav(3)}`;
 }
 function shortMsg(i) {
   if (i.rule === 'Phone') return i.message.split(' — ').pop();
   if (i.rule === 'Duplicate phone') return 'phone used twice';
+  if (i.rule === 'Phone already in template') return 'phone already in the template';
   if (i.rule === 'User boundary') return 'facility not found';
   if (i.rule === 'Blank name') return 'no name';
   if (i.rule === 'Bad number') return i.message;
@@ -679,7 +866,7 @@ function issueGroup(g) {
     if (g.rule === 'User boundary') actions += `<button type="button" class="quiet" data-nav="3">Open Resolve names</button>`;
   }
   actions += `<button type="button" class="quiet" data-ack="${esc(key)}">${g.rule === 'Targets on one child per parent' ? 'Keep as given' : g.sev === 'error' ? 'Ignore' : 'Mark as OK'}</button>`;
-  const detail = g.rule === 'Phone numbers' ? `${plural(g.list.length, 'user')} with a missing, invalid or repeated number` : first.codes ? esc(first.message.split(', e.g.')[0]) : first.variants && g.rule === 'Special characters' ? esc(first.message.split(' (e.g.')[0]) : g.list.length > 1 ? '' : esc(first.message);
+  const detail = g.rule === 'Phone numbers' ? `${plural(g.list.length, 'user')} with a missing, invalid or repeated number` + (g.list.some((i) => i.rule === 'Phone already in template') ? ', or one already used in the template' : '') : first.codes ? esc(first.message.split(', e.g.')[0]) : first.variants && g.rule === 'Special characters' ? esc(first.message.split(' (e.g.')[0]) : g.list.length > 1 ? '' : esc(first.message);
   return `<div class="fact"><span class="mark ${sev}">!</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length > 1 ? g.list.length : (first.codes || first.variants || [0]).length)}</span>
     ${detail ? `<div class="d">${detail}</div>` : ''}${HINT[g.rule] ? `<div class="d">${esc(HINT[g.rule])}</div>` : ''}
     ${body}<div class="choices" style="margin-top:6px;gap:2px">${actions}</div></div></div>`;
@@ -730,7 +917,7 @@ function addUserGrid(codes, need, showAll) {
   const shown = showAll ? codes : codes.slice(0, ROWS_SHOWN);
   const roleName = needRole(need).role || (need === 'oic' ? 'OIC' : 'CDD');
   return `<div class="rowcards">${shown.map((code) => { const n = S.tree.nodes.get(code); const id = 'add-' + need + '-' + code.replace(/[^A-Za-z0-9_-]/g, '');
-    return `<div class="rowcard"><div class="rc-head"><span><b style="font-weight:500">${esc(n.name)}</b> <span class="rc-ref">${esc(n.path.slice(-2, -1)[0] || '')}</span></span></div>
+    return `<div class="rowcard"><div class="rc-head"><span><b style="font-weight:500">${esc(n.name)}</b> <span class="rc-ref">${esc((n.dpath || n.path).slice(-2, -1)[0] || '')}</span></span></div>
       <div class="rc-fields"><label><span class="rc-label">Name</span><input type="text" id="${id}-n" placeholder="Full name" aria-label="Name for ${esc(n.name)}"></label>
         <label><span class="rc-label">Phone</span><input type="text" id="${id}-p" placeholder="080…" inputmode="tel" aria-label="Phone for ${esc(n.name)}"></label>
         <div style="display:flex;align-items:end"><button type="button" data-add="${esc(code)}|${need}|${id}">Add as ${esc(roleName)}</button></div></div></div>`; }).join('')}</div>`;
@@ -812,12 +999,16 @@ view.addEventListener('click', async (e) => {
     if (!name) { $(id + '-n').focus(); toast('Type a name first'); return; }
     addUser(code, need, name, phone); return;
   }
+  if (t.id === 'aRow') { addRow(); render(); return; }
+  if (t.dataset.arm !== undefined) { S.add.rows = S.add.rows.filter((r) => r.id !== Number(t.dataset.arm)); S.add.msg = ''; render(); return; }
+  if (t.id === 'aPasteGo') { const n = importRows(parsePaste($('aPaste').value), 'Pasted'); S.open.__paste = !n; S.add.msg = ''; render(); toast(n ? `Added ${plural(n, 'row')}` : 'Nothing to add'); return; }
+  if (t.id === 'aSave') { addSave(t); return; }
   if (t.id === 'dFill') { demoFill(t); return; }
   if (t.id === 'dList') { demoCsv(); return; }
   if (t.id === 'btnFill') { fillAndSave(t); return; }
   if (t.id === 'btnReport') { saveReport(); return; }
 });
-view.addEventListener('toggle', (e) => { if (e.target.id === 'editMap') S._editOpen = e.target.open; if (e.target.id === 'autoBox') { S.showAuto = e.target.open; e.target.querySelector('summary').textContent = (S.showAuto ? 'Hide ' : 'Review ') + plural(S._auto.length, 'close match', 'close matches'); } }, true);
+view.addEventListener('toggle', (e) => { if (e.target.id === 'exBox') S.open.__ex = e.target.open; if (e.target.id === 'editMap') S._editOpen = e.target.open; if (e.target.id === 'autoBox') { S.showAuto = e.target.open; e.target.querySelector('summary').textContent = (S.showAuto ? 'Hide ' : 'Review ') + plural(S._auto.length, 'close match', 'close matches'); } }, true);
 view.addEventListener('dragover', (e) => { const f = e.target.closest('.file'); if (f) f.classList.add('over'); });
 view.addEventListener('dragleave', (e) => { const f = e.target.closest('.file'); if (f) f.classList.remove('over'); });
 view.addEventListener('change', async (e) => {
@@ -826,7 +1017,7 @@ view.addEventListener('change', async (e) => {
     const f = t.files[0]; if (!f) return;
     if (S.example) clearAll();
     S.busy = `Reading ${f.name}…`; render(); await tick();
-    try { const buf = await f.arrayBuffer(); if (t.id === 'fileTpl') { await loadTemplate(buf, f.name); initDemo(); S.demoMsg = ''; } else await loadMicroplan(buf, f.name); if (ready()) { analyse(); run(); } S.busy = ''; }
+    try { const buf = await f.arrayBuffer(); if (t.id === 'fileTpl') { await loadTemplate(buf, f.name); initDemo(); S.demoMsg = ''; if (S.facts.existingUsers.length && S.mode === 'plan') toast(`${plural(S.facts.existingUsers.length, 'user')} already in this template; new ones are added after them`); } else await loadMicroplan(buf, f.name); if (ready()) { analyse(); run(); } S.busy = ''; }
     catch (err) { console.error(err); S.busy = `Could not read ${f.name}. ${err && err.message ? err.message : ''}`; }
     render(); return;
   }
@@ -855,6 +1046,21 @@ view.addEventListener('change', async (e) => {
   }
   // row edits on the export step
   if (t.dataset.cell !== undefined) { const [sheet, ri, col, kind] = t.dataset.cell.split('|'); editCell(sheet, Number(ri), Number(col), kind, t.value); return; }
+  // add-users rows and settings
+  if (S.mode === 'users' && S.tree) {
+    const row = (id) => S.add.rows.find((r) => r.id === Number(id));
+    if (t.dataset.af !== undefined) { const [id, f] = t.dataset.af.split('|'); const r = row(id); if (!r) return; if (f === 'b') setBoundary(r, t.value); else r[f] = t.value; }
+    else if (t.dataset.arole !== undefined) { const [id, k] = t.dataset.arole.split('|'); const r = row(id); if (!r) return; r.roles[Number(k)] = t.value.trim(); r.roles = r.roles.filter(Boolean); r.badRoles = []; }
+    else if (t.id === 'aPhone') S.cfg.phoneFmt = t.value;
+    else if (t.id === 'aEmp') S.add.empType = t.value;
+    else if (t.id === 'aAct') S.add.activate = t.value;
+    else if (t.id === 'fileAddList' && t.files[0]) {
+      try { const sheets = sheetsFromXLSX(await t.files[0].arrayBuffer(), false).filter((x) => !x.hidden && x.rows.length);
+        const sh = sheets.sort((a, b) => b.rows.length - a.rows.length)[0]; const n = sh ? importRows(sh.rows, sh.name) : 0; toast(n ? `Added ${plural(n, 'row')} from ${t.files[0].name}` : 'No people found in that file'); }
+      catch (err) { console.error(err); toast('Could not read that file'); }
+    } else return;
+    S.add.msg = ''; render(); return;
+  }
   // demo settings
   if (S.mode === 'demo' && S.demo) {
     const D = S.demo; const n = (v) => Math.max(0, Math.min(50, parseInt(v, 10) || 0));
@@ -867,13 +1073,14 @@ view.addEventListener('change', async (e) => {
     else if (t.id === 'dPrefix') D.prefix = t.value || 'Demo';
     else if (t.id === 'dPhone') D.phoneStart = t.value.replace(/\D/g, '');
     else if (t.id === 'dEmp') D.empType = t.value;
+    else if (t.id === 'dAct') D.activate = t.value;
     else if (t.id === 'dAddRole') { const r = t.value.trim(); if (r) D.rows.push({ role: r, include: true, level: MP.defaultRoleLevel(S.tree, r), count: 2 }); }
     else return;
     S.demoMsg = ''; render(); return;
   }
   // column edits
-  if (t.id === 'selSheet') { S.cfg.sheet = t.value; setupBoundarySheet(); }
-  else if (t.dataset.lvl !== undefined) { if (t.value === '') delete S.cfg.levelMap[t.dataset.lvl]; else S.cfg.levelMap[t.dataset.lvl] = Number(t.value); }
+  if (t.id === 'selSheet') { S.cfg.sheet = t.value || null; setupBoundarySheet(); }
+  else if (t.dataset.lvl !== undefined) { const m = t.dataset.ulvl ? S.cfg.userLevelMap : S.cfg.levelMap; if (t.value === '') delete m[t.dataset.lvl]; else m[t.dataset.lvl] = Number(t.value); }
   else if (t.dataset.tgt !== undefined) S.cfg.targetMap[t.dataset.tgt] = t.value;
   else if (t.id === 'selSplit') S.cfg.splitMode = t.value;
   else if (t.id === 'selUser') { S.cfg.userSheet = t.value || null; setupUserSheet(); }
@@ -882,6 +1089,7 @@ view.addEventListener('change', async (e) => {
   else if (t.id === 'selPhone') S.cfg.phoneFmt = t.value;
   else if (t.id === 'selEmp') S.cfg.empType = t.value;
   else if (t.id === 'skipBad') S.cfg.skipBadUsers = t.checked;
+  else if (t.id === 'selAct') { S.activate = t.value; S.exportMsg = ''; render(); return; }
   else return;
   run(); render();
 });
@@ -895,14 +1103,14 @@ function descendants(code, level) {
 async function fillAndSave(btn) {
   btn.disabled = true; $('expStatus').textContent = 'Writing the template…'; await tick();
   try {
-    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(S.tplBuf.slice(0));
     const R = S.res;
     const users = R.users.filter((u) => u.code && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
     const targetMap = Object.fromEntries(Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null));
-    const log = await MPW.fillTemplate(wb, { tree: S.tree, agg: R.agg, targetMap, splitMode: S.cfg.splitMode, users, employmentType: S.cfg.empType });
-    const buf = await wb.xlsx.writeBuffer();
-    await saveFile(`${S.tplName.replace(/\.xlsx$/i, '')}_filled.xlsx`, new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-    S.exportMsg = `Wrote ${plural(log.targetsWritten, 'target cell')} and ${plural(log.usersWritten, 'user')}. ${log.targetMissing.length ? plural(log.targetMissing.length, 'target row') + ' left blank (listed in the report).' : ''}`;
+    const log = await writeTemplate({ agg: R.agg, targetMap, splitMode: S.cfg.splitMode, users, employmentType: S.cfg.empType, activate: activation(S.activate, usedCodes()) }, 'filled');
+    S.exportMsg = [R.matched.length ? `Wrote ${plural(log.targetsWritten, 'target cell')} and ${plural(log.usersWritten, 'user')}.` : `Added ${plural(log.usersWritten, 'user')}.`,
+      log.existingUsers ? `${plural(log.existingUsers, 'user')} already there were kept.` : '',
+      log.facilitiesActivated ? `${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '',
+      log.targetMissing.length ? plural(log.targetMissing.length, 'target row') + ' left blank (listed in the report).' : ''].filter(Boolean).join(' ');
   } catch (err) { console.error(err); S.exportMsg = 'Could not write the template. ' + (err && err.message || err); }
   $('expStatus').textContent = S.exportMsg; btn.disabled = false;
 }
@@ -916,7 +1124,7 @@ function saveReport() {
   for (const [k, c] of tmap) { const r = R.agg.rolled.get(T.roots[0]); summary.push(['Total ' + k, r ? r[Number(c)] : '']); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
   const rows = [['Sheet', 'Row', 'Microplan path', 'Status', 'Failed at', 'Boundary code', 'Template path'].concat(tmap.map(([k]) => k))];
-  for (const m of R.matched) rows.push([m.sheet, m.row, (m.path || []).map((p) => p.name).join(' > ') || (m.names || []).join(' > '), STATUS_LABEL[m.status] || m.status, m.failedAt >= 0 && m.path ? T.levelLabels[m.path[m.failedAt].level] + ': ' + m.path[m.failedAt].name : '', m.code || '', m.code ? T.nodes.get(m.code).path.join(' > ') : ''].concat(tmap.map(([, c]) => (m.values ? m.values[Number(c)] : ''))));
+  for (const m of R.matched) rows.push([m.sheet, m.row, (m.path || []).map((p) => p.name).join(' > ') || (m.names || []).join(' > '), STATUS_LABEL[m.status] || m.status, m.failedAt >= 0 && m.path ? T.levelLabels[m.path[m.failedAt].level] + ': ' + m.path[m.failedAt].name : '', m.code || '', m.code ? MP.label(T, m.code) : ''].concat(tmap.map(([, c]) => (m.values ? m.values[Number(c)] : ''))));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Rows');
   const dec = [['Level', 'Name in microplan', 'Parent', 'Rows', 'Status', 'Score', 'Chosen code', 'Chosen name', 'Top candidates']];
   for (const d of R.decisions) dec.push([T.levelLabels[d.level], d.name, d.parentCodes && d.parentCodes.length === 1 ? MP.label(T, d.parentCodes[0]) : '', d.count, STATUS_LABEL[d.status] || d.status, Math.round((d.score || 0) * 100) / 100, d.code || '', d.code ? T.nodes.get(d.code).name : '', (d.candidates || []).slice(0, 3).map((c) => c.name + ' (' + Math.round(c.score * 100) + '%)').join('; ')]);
@@ -924,12 +1132,12 @@ function saveReport() {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Severity', 'Check', 'Detail', 'Where']].concat(R.issues.map((i) => [i.severity, i.rule, i.message, i.ref]))), 'Checks');
   if (tmap.length) {
     const miss = [['Boundary code', 'Path']];
-    for (const n of T.nodes.values()) { if (n.level !== T.depth || n.synthetic) continue; if (MP.valueFor(T, R.agg, n.code, Number(tmap[0][1]), S.cfg.splitMode).v == null) miss.push([n.code, n.path.join(' > ')]); }
+    for (const n of T.nodes.values()) { if (n.level !== T.depth || n.synthetic) continue; if (MP.valueFor(T, R.agg, n.code, Number(tmap[0][1]), S.cfg.splitMode).v == null) miss.push([n.code, MP.label(T, n.code)]); }
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(miss), 'No target');
   }
   if (R.users.length) {
     const u = [['Sheet', 'Row', 'Name', 'Phone (in microplan)', 'Phone (written)', 'Phone check', 'Designation', 'Role', 'Boundary code', 'Facility path']];
-    for (const x of R.users) u.push([x.sheet, x.row, x.person.name, x.person.phone, x.phoneNorm.ok ? x.phoneNorm.value : '', x.phoneNorm.ok ? 'ok' : x.phoneNorm.reason, x.person.role, x.role, x.code || '', x.code ? T.nodes.get(x.code).path.join(' > ') : (x.path || []).map((p) => p.name).join(' > ') + ' (not matched)']);
+    for (const x of R.users) u.push([x.sheet, x.row, x.person.name, x.person.phone, x.phoneNorm.ok ? x.phoneNorm.value : '', x.phoneNorm.ok ? 'ok' : x.phoneNorm.reason, x.person.role, x.role, x.code || '', x.code ? MP.label(T, x.code) : (x.path || []).map((p) => p.name).join(' > ') + ' (not matched)']);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(u), 'Users');
   }
   if (S.edits.log.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['#', 'Edit']].concat(S.edits.log.map((e) => [e.id, e.desc]))), 'Edits');
@@ -937,47 +1145,71 @@ function saveReport() {
 }
 
 function clearAll() {
-  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {} });
+  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {}, activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' } });
   S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true };
 }
 
 // ───────── example: a console-style template and a microplan built in memory ─────────
+// Mirrors the console's own template: technical keys in a hidden row 1, hidden *_HELPER formula columns and a hidden
+// boundary-code formula, a hidden lookup sheet, and cascading INDIRECT dropdowns keyed by the helper hash.
 async function buildExample() {
   const levels = ['Country', 'State', 'LGA', 'Ward', 'Health Facility', 'Community'];
-  const keys = ['ADMIN_COUNTRY', 'ADMIN_STATE', 'ADMIN_LGA', 'ADMIN_WARD', 'ADMIN_HEALTH FACILITY', 'ADMIN_COMMUNITY'];
-  const pathCode = new Map(SAMPLE.tpl.map(([p, c]) => [p, c]));
-  const helper = async (codes) => 'H_' + (await MP.sha256hex(codes.join('#')));
-  const hdr = (extraK, extraL) => { const k = [], l = []; keys.forEach((kk, i) => { if (i) { k.push(kk + '_HELPER'); l.push(kk + '_HELPER'); } k.push(kk); l.push(levels[i]); }); return [k.concat(extraK), l.concat(extraL)]; };
+  const keys = levels.map((l) => 'ADMIN_' + l.toUpperCase());
+  const code = new Map(SAMPLE.tpl.map(([p, c]) => [p, c]));
+  const kids = new Map();
+  for (const [p] of SAMPLE.tpl) { const i = p.lastIndexOf('#'); if (i < 0) continue; const par = p.slice(0, i); if (!kids.has(par)) kids.set(par, []); kids.get(par).push(p.slice(i + 1)); }
+  const hashOf = async (p) => 'H_' + (await MP.sha256hex(p.split('#').map((_, i, a) => code.get(a.slice(0, i + 1).join('#'))).join('#')));
   const wb = new ExcelJS.Workbook();
   const fs = wb.addWorksheet('HCM_ADMIN_CONSOLE_FACILITIES_LI');
   const us = wb.addWorksheet('HCM_ADMIN_CONSOLE_USERS_LIST');
   const tg = wb.addWorksheet('HCM_ADMIN_CONSOLE_TARGETS');
-  const rs = wb.addWorksheet('_h_Roles_h_', { state: 'hidden' });
-  const bs = wb.addWorksheet('_h_Boundary_h_', { state: 'hidden' });
-  let [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_FACILITY_CODE', 'HCM_ADMIN_CONSOLE_FACILITY_NAME', 'HCM_ADMIN_CONSOLE_FACILITY_TYPE', 'HCM_ADMIN_CONSOLE_FACILITY_STATUS', 'HCM_ADMIN_CONSOLE_FACILITY_CAPACITY', 'HCM_ADMIN_CONSOLE_FACILITY_USAGE'], ['Boundary Code', 'Facility Code', 'Facility Name', 'Facility Type', 'Facility Status', 'Capacity', 'Facility Usage']);
-  fs.addRow(k); fs.addRow(l);
-  const roleKeys = [1, 2, 3, 4, 5].map((i) => 'HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_' + i);
-  [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_USER_NAME', 'HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER'].concat(roleKeys, ['HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE', 'HCM_ADMIN_CONSOLE_USER_USAGE']),
-    ['Boundary Code', 'Name of the Person (Mandatory)', 'Phone Number (Mandatory)'].concat([1, 2, 3, 4, 5].map((i) => 'User Role ' + i), ['Employment Type (Mandatory)', 'Active / Inactive']));
-  us.addRow(k); us.addRow(l);
-  const roleList = ['Distributor', 'Health Facility Supervisor', 'Warehouse Manager', 'Field Supervisor', 'National Supervisor'];
-  roleList.forEach((r) => rs.addRow([r]));
-  const roleCol = k.indexOf(roleKeys[0]) + 1, empCol = k.indexOf('HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE') + 1;
-  for (let r = 3; r <= 80; r++) {
-    for (let c = roleCol; c < roleCol + 5; c++) us.getCell(r, c).dataValidation = { type: 'list', allowBlank: true, formulae: [`'_h_Roles_h_'!$A$1:$A$${roleList.length}`] };
-    us.getCell(r, empCol).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Permanent,Temporary"'] };
-  }
-  [k, l] = hdr(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_TARGET_AZM_1', 'HCM_ADMIN_CONSOLE_TARGET_AZM_2', 'HCM_ADMIN_CONSOLE_TARGET'], ['Boundary Code', 'Target 1-11 months', 'Target 12-59 months', 'Total Target']);
-  tg.addRow(k); tg.addRow(l);
+  const lk = wb.addWorksheet('_h_SimpleLookup_h_', { state: 'hidden' });
+  // lookup: one row per parent (hash, child names…) → <hash>_LIST; then name path → code (D:E); then code path, name path, hash (H:J)
+  const parents = Array.from(kids.keys()); let r = 1;
+  for (const p of parents) { const h = await hashOf(p); const ch = kids.get(p); lk.getRow(r).values = [h].concat(ch); wb.definedNames.add(`'_h_SimpleLookup_h_'!$B$${r}:$${MP.colLetter(ch.length)}$${r}`, h + '_LIST'); r++; }
+  wb.definedNames.add("'_h_SimpleLookup_h_'!$ZZ$1", '_h_EmptyList');
+  const d0 = r + 1; SAMPLE.tpl.forEach(([p, c], i) => { lk.getCell(d0 + i, 4).value = p; lk.getCell(d0 + i, 5).value = c; }); const d1 = d0 + SAMPLE.tpl.length - 1;
+  const h0 = d1 + 2; for (let i = 0; i < parents.length; i++) { const p = parents[i]; lk.getCell(h0 + i, 8).value = p.split('#').map((_, j, a) => code.get(a.slice(0, j + 1).join('#'))).join('#'); lk.getCell(h0 + i, 9).value = p; lk.getCell(h0 + i, 10).value = await hashOf(p); } const h1 = h0 + parents.length - 1;
+  const L = '_h_SimpleLookup_h_';
+  const headers = (extraK, extraL) => { const k = [], l = []; keys.forEach((kk, i) => { if (i) { k.push(kk + '_HELPER'); l.push(kk + '_HELPER'); } k.push(kk); l.push(levels[i]); }); return [k.concat(extraK), l.concat(extraL)]; };
+  const nameCol = (i) => (i === 0 ? 1 : 2 * i + 1), helperCol = (i) => 2 * i; // 1-based
+  const cat = (row, upto) => 'CONCATENATE(' + Array.from({ length: upto }, (_, j) => MP.colLetter(nameCol(j) - 1) + row).join(',"#",') + ')';
+  const helperF = (row, i) => `IFERROR(INDEX(${L}!$J$${h0}:$J$${h1},MATCH(${cat(row, i)},${L}!$I$${h0}:$I$${h1},0)),"")`;
+  const codeF = (row) => { let f = '""'; for (let i = 0; i < levels.length; i++) f = `IF(${MP.colLetter(nameCol(i) - 1)}${row}<>"",IFERROR(VLOOKUP(${cat(row, i + 1)},${L}!$D$${d0}:$E$${d1},2,0),""),${f})`; return f; };
+  const fmtSheet = (ws, k, l, codeIdx) => {
+    ws.addRow(k); ws.addRow(l); ws.getRow(1).hidden = true; ws.getRow(2).font = { bold: true };
+    k.forEach((kk, i) => { const col = ws.getColumn(i + 1); col.width = /_HELPER$/.test(kk) ? 12 : 24; if (/_HELPER$/.test(kk) || i === codeIdx) col.hidden = true; });
+  };
+  const staticRow = async (p, extra) => { const segs = p.split('#'); const row = []; for (let i = 0; i < levels.length; i++) { if (i) row.push(i < segs.length ? await hashOf(segs.slice(0, i).join('#')) : ''); row.push(segs[i] || ''); } return row.concat(extra); };
+  // facilities and targets: rows the console pre-fills
+  let [k, l] = headers(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_FACILITY_CODE', 'HCM_ADMIN_CONSOLE_FACILITY_NAME', 'HCM_ADMIN_CONSOLE_FACILITY_TYPE', 'HCM_ADMIN_CONSOLE_FACILITY_STATUS', 'HCM_ADMIN_CONSOLE_FACILITY_CAPACITY', 'HCM_ADMIN_CONSOLE_FACILITY_USAGE'], ['Boundary Code', 'Facility Code', 'Facility Name', 'Facility Type', 'Facility Status', 'Capacity', 'Facility Usage']);
+  fmtSheet(fs, k, l, k.indexOf('HCM_ADMIN_CONSOLE_BOUNDARY_CODE'));
+  const usageCol = k.indexOf('HCM_ADMIN_CONSOLE_FACILITY_USAGE') + 1;
+  [k, l] = headers(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_TARGET_AZM_1', 'HCM_ADMIN_CONSOLE_TARGET_AZM_2', 'HCM_ADMIN_CONSOLE_TARGET'], ['Boundary Code', 'Target 1-11 months', 'Target 12-59 months', 'Total Target']);
+  fmtSheet(tg, k, l, k.indexOf('HCM_ADMIN_CONSOLE_BOUNDARY_CODE'));
   for (const [p, c] of SAMPLE.tpl) {
-    bs.addRow([p, c]);
-    const segs = String(p).split('#');
-    if (segs.length < 5) continue;
-    const codes = segs.map((_, i) => pathCode.get(segs.slice(0, i + 1).join('#')));
-    const row = [];
-    for (let i = 0; i < 6; i++) { if (i) row.push(i < segs.length ? await helper(codes.slice(0, i)) : ''); row.push(segs[i] || ''); }
-    if (segs.length === 5) fs.addRow(row.concat([c, 'F-EX-' + c.slice(-5), segs[4], 'Health Facility', 'Permanent', 100, 'Inactive']));
-    else tg.addRow(row.concat([c, null, null, null]));
+    const depth = p.split('#').length;
+    if (depth === 5) fs.addRow(await staticRow(p, [c, 'F-EX-' + c.slice(-5), p.split('#')[4], 'Health Facility', 'Permanent', 100, 'Inactive']));
+    else if (depth === 6) tg.addRow(await staticRow(p, [c, null, null, null]));
+  }
+  for (let rr = 3; rr <= fs.rowCount; rr++) fs.getCell(rr, usageCol).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Active,Inactive"'] };
+  // users: prepared rows with formulas and dropdowns, as the console ships them
+  const roleKeys = [1, 2, 3, 4, 5].map((i) => 'HCM_ADMIN_CONSOLE_USER_ROLE_MULTISELECT_' + i);
+  [k, l] = headers(['HCM_ADMIN_CONSOLE_BOUNDARY_CODE', 'HCM_ADMIN_CONSOLE_USER_NAME', 'HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER'].concat(roleKeys, ['HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE', 'HCM_ADMIN_CONSOLE_USER_USAGE']),
+    ['Boundary Code', 'Name of the Person (Mandatory)', 'Phone Number (Mandatory)'].concat([1, 2, 3, 4, 5].map((i) => 'User Role ' + i), ['Employment Type (Mandatory)', 'Active / Inactive']));
+  const bcCol = k.indexOf('HCM_ADMIN_CONSOLE_BOUNDARY_CODE') + 1;
+  fmtSheet(us, k, l, bcCol - 1);
+  const roles = '"DISTRIBUTOR,HEALTH_FACILITY_WORKER,HEALTH_FACILITY_SUPERVISOR,WAREHOUSE_MANAGER,TEAM_SUPERVISOR,DISTRICT_SUPERVISOR,NATIONAL_SUPERVISOR,DASHBOARD_VIEWER"';
+  const roleCol = k.indexOf(roleKeys[0]) + 1, empCol = k.indexOf('HCM_ADMIN_CONSOLE_USER_EMPLOYMENT_TYPE') + 1, useCol = k.indexOf('HCM_ADMIN_CONSOLE_USER_USAGE') + 1;
+  const root = SAMPLE.tpl[0][0];
+  for (let rr = 3; rr <= 202; rr++) {
+    for (let i = 1; i < levels.length; i++) us.getCell(rr, helperCol(i)).value = { formula: helperF(rr, i), result: '' };
+    us.getCell(rr, bcCol).value = { formula: codeF(rr), result: '' };
+    us.getCell(rr, 1).dataValidation = { type: 'list', allowBlank: true, formulae: [`"${root}"`] };
+    for (let i = 1; i < levels.length; i++) { const hc = MP.colLetter(helperCol(i) - 1); us.getCell(rr, nameCol(i)).dataValidation = { type: 'list', allowBlank: true, formulae: [`INDIRECT(IF(${hc}3<>"",${hc}3&"_LIST","_h_EmptyList"))`] }; } // one range per column, written relative to its first row like the console
+    for (let c = roleCol; c < roleCol + 5; c++) us.getCell(rr, c).dataValidation = { type: 'list', allowBlank: true, formulae: [roles] };
+    us.getCell(rr, empCol).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Permanent,Temporary"'] };
+    us.getCell(rr, useCol).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Active,Inactive"'] };
   }
   const tplBuf = await wb.xlsx.writeBuffer();
   const mwb = XLSX.utils.book_new();
@@ -1004,6 +1236,7 @@ async function bootExample() {
   } catch (err) { console.error(err); }
   S.busy = ''; render();
 }
+window.__mpm = { state: () => S }; // read-only hook for the test harness
 render();
 if (!window.XLSX || !window.ExcelJS) { S.busy = 'The spreadsheet libraries did not load. Check the connection and reload.'; render(); }
 else if (SAMPLE) bootExample();

@@ -2,6 +2,8 @@
 const fs = require('fs');
 const path = require('path');
 const { JSDOM, VirtualConsole } = require('jsdom');
+const XLSX = require('xlsx');
+const { verify } = require('./verify_template.js');
 const root = path.join(__dirname, '..');
 const file = process.argv[2] || path.join(root, 'dist/index.html');
 let html = fs.readFileSync(file, 'utf8');
@@ -22,6 +24,8 @@ const dom = new JSDOM(doc, {
     w.TextEncoder = TextEncoder; w.TextDecoder = TextDecoder;
     w.URL.createObjectURL = () => 'blob:x'; w.URL.revokeObjectURL = () => {};
     w.scrollTo = () => {};
+    // jsdom's Blob has no arrayBuffer(); browsers do
+    if (!w.Blob.prototype.arrayBuffer) w.Blob.prototype.arrayBuffer = function () { return new Promise((res) => { const fr = new w.FileReader(); fr.onload = () => res(fr.result); fr.readAsArrayBuffer(this); }); };
     w.claude = { use: async (n) => (n === 'downloads' ? { save: async ({ filename, data }) => { saved.push({ filename, data }); return { status: 'saved' }; } } : null) };
   },
 });
@@ -87,8 +91,72 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
   click('#dFill'); await until(() => saved.some((s) => s.filename.endsWith('_demo_users.xlsx')));
   console.log('   ', txt(d.getElementById('demoStatus')));
   click('#dList'); await until(() => saved.some((s) => s.filename.endsWith('_demo_users.csv')));
-  click('[data-mode="plan"]'); await wait(50);
-  click('#steps [data-go="1"]'); click('#clearEx'); await wait(100);
+  const bytes = async (blob) => new Uint8Array(await blob.arrayBuffer());
+  const latest = (suffix) => saved.filter((s) => s.filename.endsWith(suffix)).pop();
+  const tplU8 = new Uint8Array(w.__mpm.state().tplBuf);
+  for (const suffix of ['_filled.xlsx', '_demo_users.xlsx']) {
+    const rep = await verify(tplU8, await bytes(latest(suffix).data));
+    console.log('   verify', suffix, rep.ok ? 'OK' : 'FAIL', `users ${rep.users} | facilities ${JSON.stringify(rep.facilities)}`, rep.ok ? '' : JSON.stringify(rep));
+    if (!rep.ok) process.exit(1);
+  }
+  const setFile = async (sel, name, u8) => { const inp = d.querySelector(sel); const f = new w.File([u8], name); Object.defineProperty(inp, 'files', { value: [f], configurable: true }); fire(inp); await wait(300); };
+  const rowF = (n, f) => d.querySelector(`[data-af="${n}|${f}"]`);
+
+  // add users to the empty example template: one typed, three pasted (one bad boundary, one repeated phone)
+  click('[data-mode="users"]'); await wait(100);
+  console.log('[users]', txt(d.querySelector('.file .meta')), '| row cards:', d.querySelectorAll('.rowcard').length);
+  const uid1 = d.querySelector('[data-af$="|name"]').dataset.af.split('|')[0];
+  fire(rowF(uid1, 'name'), 'Typed Person'); fire(rowF(uid1, 'phone'), '08031230001');
+  fire(rowF(uid1, 'b'), 'Garko PHC'); fire(d.querySelector(`[data-arole="${uid1}|0"]`), 'HEALTH_FACILITY_WORKER'); await wait(50);
+  fire(d.querySelector(`[data-arole="${uid1}|1"]`), 'TEAM_SUPERVISOR'); await wait(50);
+  console.log('   typed row:', txt(d.querySelector('.rowcard .rc-head')), '| boundary →', rowF(uid1, 'b').value);
+  click('[data-toggle="__paste"]'); await wait(50);
+  d.getElementById('aPaste').value = ['Name\tPhone\tRole\tBoundary', 'Pasted CDD\t0803 123 0002\tCDD\tAkko › Akko PHCC', 'Pasted Twin\t08031230002\tDistributor\tKalshingi PHC', 'Pasted Lost\t08031230003\tCDD\tNowhere Clinic'].join('\n');
+  click('#aPasteGo'); await wait(100);
+  console.log('   after paste:', d.querySelectorAll('.rowcard').length, 'rows | problems:', [...d.querySelectorAll('.rowcard .rc-problem')].map(txt).filter(Boolean).join(' / '));
+  console.log('   ', txt(d.querySelector('.facts .fact .t')), '|', txt(d.getElementById('aSave')));
+  click('#aSave'); await until(() => latest('_with_users.xlsx'));
+  console.log('   ', txt(d.getElementById('addStatus')));
+  const withUsers = await bytes(latest('_with_users.xlsx').data);
+  let rep = await verify(tplU8, withUsers);
+  console.log('   verify _with_users', rep.ok ? 'OK' : 'FAIL', 'users', rep.users, rep.ok ? '' : JSON.stringify(rep)); if (!rep.ok || rep.users !== 2) process.exit(1);
+
+  // reopen the filled template and add more: existing users listed, their phones blocked
+  await setFile('#fileTpl', 'Example_with_users.xlsx', withUsers);
+  console.log('[users again]', txt(d.querySelector('.file .meta')), '| existing box:', txt(d.querySelector('#exBox summary')));
+  const uid2 = d.querySelector('[data-af$="|name"]').dataset.af.split('|')[0];
+  fire(rowF(uid2, 'name'), 'Second Batch'); fire(rowF(uid2, 'phone'), '08031230001'); fire(rowF(uid2, 'b'), 'Bogo Waziri HC'); fire(d.querySelector(`[data-arole="${uid2}|0"]`), 'DISTRIBUTOR'); await wait(50);
+  console.log('   repeated phone:', txt(d.querySelector('.rowcard .rc-problem')));
+  if (!/already used by Typed Person/.test(txt(d.querySelector('.rowcard .rc-problem')))) { console.error('FAIL existing phone not caught'); process.exit(1); }
+  fire(rowF(uid2, 'phone'), '08031230009'); await wait(50);
+  click('#aSave'); await until(() => saved.filter((s) => s.filename.endsWith('_with_users.xlsx')).length >= 2);
+  console.log('   ', txt(d.getElementById('addStatus')));
+  rep = await verify(withUsers, await bytes(latest('_with_users.xlsx').data));
+  console.log('   verify second batch', rep.ok ? 'OK' : 'FAIL', 'users', rep.users, rep.ok ? '' : JSON.stringify(rep)); if (!rep.ok || rep.users !== 3) process.exit(1);
+
+  // microplan flow with only a user list, on the filled template
+  click('[data-mode="plan"]'); await wait(50); click('#steps [data-go="1"]'); await wait(50);
+  const ub = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(ub, XLSX.utils.aoa_to_sheet([['State', 'LGA', 'Ward', 'Health Facility', 'Name', 'Phone Number', 'Designation'],
+    ['Gombe', 'Akko', 'AKKO', 'Akko PHCC', 'List OIC', '08031230011', 'OIC'], ['Gombe', 'Akko', 'Garko', 'Garko PHC', 'List CDD', '08031230001', 'CDD']]), 'Users');
+  await setFile('#fileMp', 'user_list.xlsx', new Uint8Array(XLSX.write(ub, { type: 'array', bookType: 'xlsx' })));
+  console.log('[user list only]', txt(d.querySelectorAll('.file .meta')[1]));
+  click('[data-nav="2"]'); console.log('   columns:', [...d.querySelectorAll('.facts .fact .t')].map((t) => t.childNodes[0].textContent.trim()).join(' | '));
+  click('[data-nav="3"]'); await wait(50); console.log('   names:', txt(d.querySelector('.big')), txt(d.querySelector('.big + .muted')));
+  click('[data-nav="4"]'); await wait(50);
+  console.log('   export:', txt(d.querySelector('.intro')), '| checks:', [...d.querySelectorAll('.facts .fact .t')].map((t) => t.childNodes[0].textContent.trim()).join(' | '));
+  if (!/phone already in the template/.test(txt(d.querySelector('.facts')))) { console.error('FAIL user-list phone clash not flagged'); process.exit(1); }
+  click('#btnFill'); await until(() => saved.filter((s) => s.filename.endsWith('_filled.xlsx')).length >= 2);
+  console.log('   ', txt(d.getElementById('expStatus')));
+
+  rep = await verify(withUsers, await bytes(latest('_filled.xlsx').data));
+  console.log('   verify user-list fill', rep.ok ? 'OK' : 'FAIL', 'users', rep.users, rep.ok ? '' : JSON.stringify(rep)); if (!rep.ok || rep.users !== 3) process.exit(1);
+
+  // reload the example, then clear it
+  click('#steps [data-go="1"]'); await wait(50);
+  await setFile('#fileTpl', 'Example_Akko_Unified_Template.xlsx', tplU8); await wait(100);
+  console.log('[after reload] template:', txt(d.querySelector('.file .meta')));
+  w.__mpm.state().example = true; click('#steps [data-go="1"]'); await wait(50); click('#clearEx'); await wait(100);
   console.log('[clear] continue disabled:', d.querySelector('[data-nav="2"]').disabled, '| try example link:', !!d.getElementById('loadEx'));
   for (const s of saved) {
     const buf = Buffer.from(await new Promise((res) => { const fr = new w.FileReader(); fr.onload = () => res(fr.result); fr.readAsArrayBuffer(s.data); }));

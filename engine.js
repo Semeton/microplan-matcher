@@ -140,7 +140,37 @@
   const cellStr = (v) => (v === null || v === undefined ? '' : String(v).trim());
   const isNum = (v) => v !== '' && v !== null && v !== undefined && !isNaN(Number(String(v).replace(/,/g, '')));
   const toNum = (v) => (isNum(v) ? Number(String(v).replace(/,/g, '')) : null);
-  const looksLikeCode = (s) => !!s && !/\s/.test(s) && !s.includes('#') && /^[A-Za-z0-9_\-\.]+$/.test(s) && s.length >= 4;
+  // Console helper keys (H_ + sha256) sit next to paths in the lookup sheet too; they are not boundary codes.
+  const isHelperHash = (s) => /^H_[0-9a-f]{64}$/i.test(s);
+  const looksLikeCode = (s) => !!s && !isHelperHash(s) && !/\s/.test(s) && !s.includes('#') && /^[A-Za-z0-9_\-\.]+$/.test(s) && s.length >= 4;
+
+  const ACRONYMS = new Set(['LGA', 'PHU', 'HF', 'DP', 'CDD', 'OIC', 'IDP', 'LGEA', 'CHC', 'PHC', 'MCHP', 'CHP', 'DH']);
+
+  /** Some templates carry boundary codes where names should be (ITN_NI_01_01_BIU). Recover a readable name from the
+   *  code: the words after the numbering ("BIU", "BO MANDARAGIRAU DH", "AUDI 5"). */
+  function nameFromCode(code) {
+    const toks = String(code).split('_');
+    let i = toks.findIndex((t) => /^\d+$/.test(t));
+    if (i < 0) return toks.length > 1 ? toks.slice(1).join(' ') : code;
+    while (i < toks.length && /^\d+$/.test(toks[i])) i++;
+    const tail = toks.slice(i);
+    if (!tail.length) return code;
+    return tail.map((w) => (w.length <= 3 || ACRONYMS.has(w.toUpperCase()) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())).join(' ');
+  }
+  const isCodeName = (name, code) => !!name && (name === code || (/^[A-Z0-9]+(_[A-Z0-9]+)+$/.test(name) && /_\d/.test(name)));
+
+  /** "ADMIN_KAMBIA_PHU" → "PHU", "ADMIN_STATE" → "State" (labels in some templates repeat the technical key). */
+  function prettyLevels(keys, labels) {
+    const stripped = keys.map((k) => k.replace(/^ADMIN_/, ''));
+    labels = labels.map((l) => (l && keys.includes(l.replace(/\\_/g, '_')) ? '' : l));
+    let pre = stripped[0] || '';
+    for (const k of stripped) while (pre && !k.startsWith(pre)) pre = pre.slice(0, pre.lastIndexOf('_') > 0 ? pre.lastIndexOf('_') : 0);
+    if (pre && !pre.endsWith('_')) pre = stripped.every((k) => k.startsWith(pre + '_')) ? pre + '_' : '';
+    return labels.map((l, i) => {
+      const raw = l && l.replace(/\\_/g, '_') !== keys[i] && !/^ADMIN_/.test(l) ? l : stripped[i].slice(pre.length) || stripped[i];
+      return raw.replace(/_/g, ' ').split(' ').map((w) => (ACRONYMS.has(w.toUpperCase()) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())).join(' ');
+    });
+  }
 
   // ───────────────────────── template parsing ─────────────────────────
   /**
@@ -149,6 +179,7 @@
    */
   function parseTemplate(sheets) {
     const pathToCode = new Map();
+    const pathToHash = new Map(); // name path → console helper key, when the template carries its own lookup
     const tech = { facility: null, user: null, targets: [], other: [] };
     let levelKeys = null, levelLabels = null;
 
@@ -158,11 +189,14 @@
       const keys = r0.map((k) => k.replace(/\\_/g, '_'));
       const has = (k) => keys.indexOf(k);
       if (has('HCM_ADMIN_CONSOLE_BOUNDARY_CODE') >= 0) {
-        const adminCols = keys.map((k, i) => [k, i]).filter(([k]) => /^ADMIN_/.test(k) && !/_HELPER$/.test(k));
-        const helperCols = keys.map((k, i) => [k, i]).filter(([k]) => /^ADMIN_.*_HELPER$/.test(k));
+        // Boundary level columns are everything left of the boundary code column (ADMIN_STATE, ITN_LGA, ...),
+        // except the helper columns some console versions interleave.
+        const bc = has('HCM_ADMIN_CONSOLE_BOUNDARY_CODE');
+        const adminCols = keys.map((k, i) => [k, i]).filter(([k, i]) => i < bc && k && !/_HELPER$/.test(k) && !/^HCM_/.test(k));
+        const helperCols = keys.map((k, i) => [k, i]).filter(([k, i]) => i < bc && /_HELPER$/.test(k));
         const info = { sheet: sh.name, keys, labels: (rows[1] || []).map(cellStr), adminCols, helperCols,
           boundaryCol: has('HCM_ADMIN_CONSOLE_BOUNDARY_CODE'), headerRows: 2 };
-        if (!levelKeys && adminCols.length) { levelKeys = adminCols.map(([k]) => k); levelLabels = adminCols.map(([, i]) => cellStr((rows[1] || [])[i]) || keys[i]); }
+        if (!levelKeys && adminCols.length) { levelKeys = adminCols.map(([k]) => k); levelLabels = prettyLevels(levelKeys, adminCols.map(([, i]) => cellStr((rows[1] || [])[i]))); }
         if (has('HCM_ADMIN_CONSOLE_FACILITY_CODE') >= 0) tech.facility = info;
         else if (has('HCM_ADMIN_CONSOLE_USER_NAME') >= 0) tech.user = info;
         else if (keys.some((k) => /TARGET/i.test(k))) { info.targetCols = keys.map((k, i) => [k, i]).filter(([k]) => /TARGET/i.test(k)); tech.targets.push(info); }
@@ -182,25 +216,43 @@
       }
       // hidden path→code sheets: any row with an "A#B#C" cell and a code-looking neighbour.
       // Once a column is known to hold paths, single-segment rows in it (the root) count too.
-      const pathCols = new Map();
+      // Single-segment rows (the root) count only when that name starts other paths in the same column,
+      // so dropdown-list rows that happen to share these columns are not mistaken for boundaries.
+      // A path column's neighbour counts as a code column only if its values look like codes (digits or
+      // underscores) - newer templates keep "path -> child names" dropdown rows right next to path -> code.
+      const pathCols = new Map(), hashCols = new Map(), firstSegs = new Set(), cand = new Map();
       for (const row of rows) {
         if (!row) continue;
         for (let c = 0; c < row.length; c++) {
           const v = cellStr(row[c]);
-          if (v.indexOf('#') > 0) {
-            const off = looksLikeCode(cellStr(row[c + 1])) ? 1 : looksLikeCode(cellStr(row[c - 1])) ? -1 : 0;
-            if (off) { pathToCode.set(v, cellStr(row[c + off])); pathCols.set(c, off); }
+          if (v.indexOf('#') <= 0) continue;
+          const r = cellStr(row[c + 1]), l = cellStr(row[c - 1]);
+          if (isHelperHash(r) || isHelperHash(l)) { const off = isHelperHash(r) ? 1 : -1; pathToHash.set(v, cellStr(row[c + off])); hashCols.set(c, off); firstSegs.add(v.split('#')[0]); continue; }
+          for (const off of [1, -1]) {
+            const val = cellStr(row[c + off]); if (!val || val.indexOf('#') >= 0) continue;
+            const k = c + '|' + off; if (!cand.has(k)) cand.set(k, { c, off, pairs: [], codeish: 0 });
+            const e = cand.get(k); e.pairs.push([v, val]); if (looksLikeCode(val) && /[\d_]/.test(val)) e.codeish++;
           }
         }
       }
+      for (const e of cand.values()) {
+        if (!e.pairs.length || e.codeish / e.pairs.length < 0.8) continue;
+        pathCols.set(e.c, e.off);
+        for (const [v, val] of e.pairs) if (looksLikeCode(val)) { pathToCode.set(v, val); firstSegs.add(v.split('#')[0]); }
+      }
       for (const [c, off] of pathCols) for (const row of rows) {
         const v = cellStr((row || [])[c]), code = cellStr((row || [])[c + off]);
-        if (v && v.indexOf('#') < 0 && v !== code && looksLikeCode(code)) pathToCode.set(v, code);
+        if (v && v.indexOf('#') < 0 && firstSegs.has(v) && v !== code && looksLikeCode(code)) pathToCode.set(v, code);
+      }
+      for (const [c, off] of hashCols) for (const row of rows) {
+        const v = cellStr((row || [])[c]), h = cellStr((row || [])[c + off]);
+        if (v && v.indexOf('#') < 0 && firstSegs.has(v) && isHelperHash(h)) pathToHash.set(v, h);
       }
     }
     // single-segment paths (the root) are written without '#'; recover root from 2-segment paths
     const nodes = new Map(); // code → node
     const byPath = new Map();
+    let codeNamed = 0;
     const paths = Array.from(pathToCode.keys()).sort((a, b) => a.split('#').length - b.split('#').length);
     for (const p of paths) {
       const segs = p.split('#');
@@ -208,6 +260,7 @@
       if (nodes.has(code) && nodes.get(code).path.length <= segs.length) continue;
       const node = { code, name: segs[segs.length - 1], level: segs.length - 1, path: segs, parent: null, children: [] };
       nodes.set(code, node); byPath.set(p, node);
+      codeNamed += isCodeName(node.name, code) ? 1 : 0;
     }
     // attach parents; synthesise missing ancestors so the tree is connected
     let synth = 0;
@@ -226,10 +279,14 @@
         node.parent = par.code; if (!par.children.includes(node.code)) par.children.push(node.code);
       }
     }
+    // node.path holds the template's own values (written back as-is); node.name / node.dpath are for people.
+    const namesAreCodes = nodes.size && codeNamed / nodes.size > 0.8;
+    for (const n of nodes.values()) n.name = namesAreCodes ? nameFromCode(n.path[n.path.length - 1]) : n.name;
+    for (const n of nodes.values()) n.dpath = namesAreCodes ? n.path.map((x) => nameFromCode(x)) : n.path;
     const roots = Array.from(nodes.values()).filter((n) => n.parent === null).map((n) => n.code);
     const depth = Math.max(0, ...Array.from(nodes.values()).map((n) => n.level));
     if (!levelLabels) { levelLabels = []; for (let i = 0; i <= depth; i++) levelLabels.push('Level ' + i); }
-    return { nodes, roots, depth, levelKeys, levelLabels, tech, synthetic: synth };
+    return { nodes, roots, depth, levelKeys, levelLabels, tech, synthetic: synth, pathToHash, namesAreCodes };
   }
 
   // ───────────────────────── microplan parsing ─────────────────────────
@@ -513,10 +570,32 @@
   }
 
   // ───────────────────────── phones ─────────────────────────
+  /** Phone formats: Nigeria '11' (08031234567) / '10' (8031234567) / 'intl' (+234…); Sierra Leone 'sl' (076123456) /
+   *  'sl-intl' (+23276123456); 'raw' keeps the digits as typed (7–15 digits). */
+  const PHONE_FORMATS = { '11': 'NG', '10': 'NG', intl: 'NG', sl: 'SL', 'sl-intl': 'SL', raw: '' };
+  function phoneCountry(tree) {
+    const r = tree && tree.nodes.get(tree.roots[0]); const t = r ? (r.code + ' ' + r.path[0] + ' ' + r.name).toUpperCase() : '';
+    if (/SIERRA|SIERRALEONE|_SI\b|\bSL\b/.test(t)) return 'sl';
+    if (/NIGERIA|_NI\b|\bNG\b|\bNI\b/.test(t)) return '11';
+    return 'raw';
+  }
+  const placeholder = (d) => /^0?\d0{7,}$/.test(d) || /(\d)\1{7,}/.test(d) || /^0?123456789/.test(d);
   function normPhone(raw, fmt) {
     let d = cellStr(raw).replace(/\.0+$/, '').replace(/[^\d+]/g, '');
     if (!d) return { ok: false, value: '', reason: 'blank' };
-    d = d.replace(/^\+/, '');
+    d = d.replace(/^\+/, '').replace(/^00/, '');
+    if (fmt === 'raw') {
+      const ok = d.length >= 7 && d.length <= 15;
+      if (ok && placeholder(d)) return { ok: false, value: d, reason: 'placeholder number' };
+      return { ok, value: d, reason: ok ? '' : 'phone should have 7–15 digits' };
+    }
+    if (fmt === 'sl' || fmt === 'sl-intl') {
+      if (d.startsWith('232') && d.length === 11) d = '0' + d.slice(3);
+      if (d.length === 8) d = '0' + d;
+      const ok = /^0[2-9]\d{7}$/.test(d);
+      if (ok && placeholder(d)) return { ok: false, value: d, reason: 'placeholder number' };
+      return { ok, value: ok && fmt === 'sl-intl' ? '+232' + d.slice(1) : d, reason: ok ? '' : 'not a valid Sierra Leone number (0 + 8 digits)' };
+    }
     if (d.startsWith('234') && d.length === 13) d = '0' + d.slice(3);
     if (d.length === 10 && /^[789]/.test(d)) d = '0' + d;
     const ok = /^0[789][01]\d{8}$/.test(d);
@@ -618,7 +697,7 @@
     return issues;
   }
 
-  function label(tree, code) { const n = tree.nodes.get(code); return n ? n.path.slice(1).join(' › ') : code; }
+  function label(tree, code) { const n = tree.nodes.get(code); return n ? (n.dpath || n.path).slice(1).join(' › ') : code; }
 
   // ───────────────────────── helper hash ─────────────────────────
   async function sha256hex(s) {
@@ -721,11 +800,11 @@
     const kinds = tree.levelLabels.map((l, i) => hierKind(l) || (i === 0 ? 'country' : null));
     const find = (...ks) => { for (const k of ks) { const i = kinds.indexOf(k); if (i >= 0) return i; } return -1; };
     let lvl = -1;
-    if (/national|country/.test(r)) lvl = 0;
+    if (/national|country|dashboard|campaign supervisor/.test(r)) lvl = 0;
     else if (/state|province|provincial/.test(r)) lvl = find('state');
     else if (/district|lga|county/.test(r)) lvl = find('lga');
     else if (/warehouse|store|logistic/.test(r)) lvl = find('lga', 'state');
-    else if (/field supervisor|monitor|ward/.test(r)) lvl = find('ward', 'chiefdom', 'lga');
+    else if (/field supervisor|team supervisor|proximity|monitor|ward/.test(r)) lvl = find('ward', 'chiefdom', 'lga');
     else if (/facility|hf|oic|in charge/.test(r)) lvl = find('hf');
     else if (/distributor|dispenser|registrar|cdd|vaccinator|mobili/.test(r)) lvl = find('hf', 'dp', 'community');
     if (lvl < 0) lvl = find('hf');
@@ -759,7 +838,8 @@
   function demoUsers(tree, plan) {
     const out = [];
     const prefix = (plan.prefix || 'Demo').trim();
-    const short = (role) => role.replace(/\s+/g, ' ').trim();
+    // role codes (HEALTH_FACILITY_WORKER) read better in a display name as “Health Facility Worker”
+    const short = (role) => { const r = role.replace(/\s+/g, ' ').trim(); return /^[A-Z0-9_]+$/.test(r) ? r.split('_').filter(Boolean).map((w) => w.charAt(0) + w.slice(1).toLowerCase()).join(' ') : r; };
     for (const r of plan.roles || []) {
       if (!r.role || !(r.count > 0)) continue;
       spreadPick(tree, Number(r.level), Number(r.count)).forEach((n, i) => {
@@ -767,16 +847,20 @@
       });
     }
     if (plan.allRoles && plan.allRoles.count > 0) {
+      // a user row holds at most `slots` roles; more ticked roles are shared over several multi-role users at the same place
       const roles = (plan.roles || []).filter((r) => r.role && r.include !== false).map((r) => r.role);
+      const slots = plan.roleSlots > 0 ? plan.roleSlots : roles.length || 1;
+      const chunks = []; for (let i = 0; i < roles.length; i += slots) chunks.push(roles.slice(i, i + slots));
       spreadPick(tree, Number(plan.allRoles.level), Number(plan.allRoles.count)).forEach((n, i) => {
-        out.push({ code: n.code, roles, path: n.path, name: `${prefix} All Roles ${String(i + 1).padStart(2, '0')}` });
+        chunks.forEach((rs, j) => out.push({ code: n.code, roles: rs, path: n.path,
+          name: `${prefix} ${chunks.length > 1 ? 'Multi Role' : 'All Roles'} ${String(i + 1).padStart(2, '0')}${chunks.length > 1 ? String.fromCharCode(65 + j) : ''}` }));
       });
     }
-    out.forEach((u, i) => { u.phone = nextPhone(plan.phoneStart, i); });
+    out.forEach((u, i) => { u.phone = nextPhone(plan.phoneStart, i); u.label = label(tree, u.code) || (tree.nodes.get(u.code).dpath || u.path)[0]; });
     return out;
   }
 
-  root.MP = { defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
+  root.MP = { PHONE_FORMATS, phoneCountry, nameFromCode, isHelperHash, prettyLevels, defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
     valueFor, normPhone, validate, label, helpersFor, sha256hex, colLetter, aliasKey, hierKind, cellStr, toNum };
   if (typeof module !== 'undefined') module.exports = root.MP;
 })(typeof window !== 'undefined' ? window : globalThis);
