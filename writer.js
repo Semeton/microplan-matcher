@@ -212,6 +212,17 @@
         log.sheets.push({ sheet: ws.name, kind: 'target', rows: rowsSeen, cells: written });
       }
 
+      // demo runs: the console rejects target rows with a blank mandatory target, so give each one a plausible number
+      if (plan.demoTargets && !isUser && !isFacility) {
+        const cols = demoTargetKeys(ws, hm); let n = 0;
+        for (let r = 3; r <= ws.rowCount && cols.length; r++) {
+          const code = peek(ws, r, hm.HCM_ADMIN_CONSOLE_BOUNDARY_CODE); if (!code) continue;
+          const row = ws.getRow(r);
+          for (const k of cols) if (peek(ws, r, hm[k]) === '') { put(row.getCell(hm[k]), demoValue(code + '|' + k)); n++; }
+        }
+        log.demoTargets = (log.demoTargets || 0) + n;
+      }
+
       if (isFacility && plan.activate && hm.HCM_ADMIN_CONSOLE_FACILITY_USAGE) {
         const activeVal = pickAllowed(allowedValues(wb, ws, hm.HCM_ADMIN_CONSOLE_FACILITY_USAGE), /^active$/i, 'Active');
         for (let r = 3; r <= ws.rowCount; r++) {
@@ -235,7 +246,12 @@
         // first free row = after the last row that already holds a user
         let r = 3;
         for (let i = 3; i <= end; i++) if (peek(ws, i, hm.HCM_ADMIN_CONSOLE_USER_NAME) || peek(ws, i, hm.HCM_ADMIN_CONSOLE_BOUNDARY_CODE)) r = i + 1;
-        log.existingUsers = readUsers(ws).length;
+        const existing = readUsers(ws); log.existingUsers = existing.length;
+        // phones already in the sheet as text digits become numbers too, so the whole column is one type
+        if (hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER) for (const u of existing) {
+          const cell = ws.getRow(u.row).getCell(hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER);
+          if (typeof cell.value === 'string' && /^'?\s*\+?[\d\s-]{4,}$/.test(cell.value)) { putPhone(cell, cell.value); log.phonesConverted = (log.phonesConverted || 0) + 1; }
+        }
         for (const u of plan.users) {
           if (!u.code || !tree.nodes.has(u.code)) continue;
           if (r > end) { cloneRow(ws, end, r, ncol); log.rowsAdded++; }
@@ -250,7 +266,7 @@
           });
           put(row.getCell(hm.HCM_ADMIN_CONSOLE_BOUNDARY_CODE), u.code);
           put(row.getCell(hm.HCM_ADMIN_CONSOLE_USER_NAME), u.name);
-          if (hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER) put(row.getCell(hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER), u.phone);
+          if (hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER) putPhone(row.getCell(hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER), u.phone);
           const roles = Array.from(new Set((u.roles && u.roles.length ? u.roles : [u.role]).filter(Boolean)));
           roleKeys.forEach((k, i) => put(row.getCell(hm[k]), roles[i] || ''));
           if (roles.length > roleKeys.length) log.roleOverflow = (log.roleOverflow || 0) + 1;
@@ -261,8 +277,40 @@
         log.sheets.push({ sheet: ws.name, kind: 'users', rows: log.usersWritten });
       }
     }
+    log.mandatoryBlank = mandatoryBlanks(wb);
     normaliseValidations(wb);
     return log;
+  }
+
+  /** Phones go in as numbers (no text-stored digits, no apostrophe); the leading 0 is dropped by design. */
+  function putPhone(cell, phone) {
+    const d = String(phone == null ? '' : phone).replace(/\D/g, '');
+    if (!d) { put(cell, ''); return; }
+    if (d.length <= 15) { put(cell, Number(d)); cell.numFmt = '0'; } else put(cell, d);
+  }
+  const isMandatory = (label) => /mandatory/i.test(label || '');
+  /** Target columns a demo must fill: those labelled mandatory, or every target column when none is labelled. */
+  function demoTargetKeys(ws, hm) {
+    const t = Object.keys(hm).filter((k) => /TARGET/i.test(k));
+    const m = t.filter((k) => isMandatory(s(ws.getRow(2).getCell(hm[k]).value)));
+    return m.length ? m : t;
+  }
+  function demoValue(key) { let h = 2166136261; for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); } return 50 + ((h >>> 0) % 451); }
+  /** Mandatory columns (row-2 label says "Mandatory") left blank on rows in use — the console rejects these. */
+  function mandatoryBlanks(wb) {
+    const out = [];
+    for (const ws of wb.worksheets) {
+      const hm = headerMap(ws); if (!hm.HCM_ADMIN_CONSOLE_BOUNDARY_CODE) continue;
+      const keys = Object.keys(hm).filter((k) => isMandatory(s(ws.getRow(2).getCell(hm[k]).value)) && !/_HELPER$/.test(k));
+      if (!keys.length) continue;
+      const inUse = hm.HCM_ADMIN_CONSOLE_USER_NAME ? (r) => peek(ws, r, hm.HCM_ADMIN_CONSOLE_USER_NAME) || peek(ws, r, hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER) : (r) => peek(ws, r, hm.HCM_ADMIN_CONSOLE_BOUNDARY_CODE);
+      const last = preparedEnd(ws);
+      for (const k of keys) {
+        const rows = []; for (let r = 3; r <= last; r++) if (ws.findRow(r) && inUse(r) && peek(ws, r, hm[k]) === '') rows.push(r);
+        if (rows.length) out.push({ sheet: ws.name, key: k, label: s(ws.getRow(2).getCell(hm[k]).value), count: rows.length, rows: rows.slice(0, 5) });
+      }
+    }
+    return out;
   }
 
   /** ExcelJS stores validations per cell and re-emits them as overlapping ranges (C3:C1002 + C10:C1002); in the
@@ -325,7 +373,7 @@
           facts.facilities.push({ code, name: peek(ws, r, hm.HCM_ADMIN_CONSOLE_FACILITY_NAME), usage });
         }
       } else {
-        for (const [k, col] of Object.entries(hm)) if (/TARGET/i.test(k) && !facts.targetKeys.find((t) => t.key === k)) facts.targetKeys.push({ key: k, label: s(ws.getRow(2).getCell(col).value) || k, sheet: ws.name });
+        for (const [k, col] of Object.entries(hm)) if (/TARGET/i.test(k) && !facts.targetKeys.find((t) => t.key === k)) { const label = s(ws.getRow(2).getCell(col).value) || k; facts.targetKeys.push({ key: k, label, sheet: ws.name, mandatory: isMandatory(label) }); }
       }
     }
     return facts;

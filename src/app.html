@@ -202,7 +202,7 @@ const S = {
   step: 1, example: false, busy: '',
   tplBuf: null, tplName: '', tree: null, facts: null,
   mpName: '', mpSheets: [], analyses: [],
-  cfg: { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true },
+  cfg: { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: 'ng', empType: '', skipBadUsers: true },
   aliases: {}, res: null, showAuto: false, exportMsg: '',
   mode: 'plan', demo: null, demoMsg: '',
   mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {},
@@ -215,7 +215,7 @@ function initDemo() {
   S.demo = {
     rows: roles.map((role) => ({ role, include: true, level: MP.defaultRoleLevel(S.tree, role), count: roles.length > 6 ? 1 : 2 })),
     allRoles: { on: true, level: hf >= 0 ? hf : Math.min(S.tree.depth, 4), count: 1 },
-    prefix: 'Demo', phoneStart: MP.phoneCountry(S.tree) === 'sl' ? '099990001' : '09099990001', activate: 'all',
+    prefix: 'Demo', phoneStart: MP.phoneCountry(S.tree) === 'sl' ? '99990001' : '9099990001', activate: 'all', targets: true,
     empType: S.facts.employmentOptions.find((x) => /temp/i.test(x)) || S.facts.employmentOptions[0] || 'Temporary',
   };
 }
@@ -274,6 +274,11 @@ async function writeTemplate(plan, suffix) {
   await saveFile(`${S.tplName.replace(/\.xlsx$/i, '')}_${suffix}.xlsx`, new Blob([out], { type: XLSX_MIME }));
   return log;
 }
+/** Mandatory columns still blank after writing (the console rejects the file until they are filled). */
+function mandatoryNote(log) {
+  const m = log.mandatoryBlank || []; if (!m.length) return '';
+  return ' Still blank and mandatory: ' + m.map((x) => `“${x.label.replace(/\s*\(.*$/, '')}” on ${plural(x.count, 'row')} of ${x.sheet}`).join('; ') + '.';
+}
 /* ---- facilities: which ones to mark Active ---- */
 /** Facilities whose boundary lies in the area the users / microplan cover (same branch, above or below). */
 function areaSet(codes) {
@@ -286,10 +291,10 @@ function activationField(id, mode, codes, label) {
   const inArea = new Set(areaSet(codes)); const nArea = F.facilities.filter((f) => inArea.has(f.code)).length;
   return `<label class="field">${label || 'Facilities to mark Active'}<select id="${id}">${opt('used', `In this area (${fmt(nArea)} of ${fmt(F.facilityCount)})`, mode)}${opt('all', `All ${fmt(F.facilityCount)}`, mode)}${opt('leave', `Leave as they are (${fmt(F.facilityActive)} active)`, mode)}</select></label>`;
 }
-const phoneDigits = (v) => String(v == null ? '' : v).replace(/\.0+$/, '').replace(/\D/g, '').slice(-8); // last 8 digits: same number with or without 0 / country code
+/** Same number with or without its leading 0 or country code → one key. */
+const phoneDigits = (v) => { const raw = String(v == null ? '' : v).replace(/\.0+$/, ''); if (!raw.replace(/\D/g, '')) return ''; return MP.normPhone(raw, S.cfg.phoneFmt).value.replace(/^0+/, ''); };
 function phoneOptions(cur) {
-  return opt('11', 'Nigeria · 08031234567', cur) + opt('10', 'Nigeria · 8031234567', cur) + opt('intl', 'Nigeria · +2348031234567', cur)
-    + opt('sl', 'Sierra Leone · 076123456', cur) + opt('sl-intl', 'Sierra Leone · +23276123456', cur) + opt('raw', 'Keep digits as typed', cur);
+  return opt('ng', 'Nigeria · 10 digits (8031234567)', cur) + opt('sl', 'Sierra Leone · 8 digits (76123456)', cur) + opt('raw', 'Any · 7–15 digits', cur);
 }
 async function loadMicroplan(buf, name) {
   S.mpName = name; S.mpOrig = sheetsFromXLSX(buf, true);
@@ -421,6 +426,7 @@ function viewDemo() {
   const users = MP.demoUsers(S.tree, demoPlan());
   const nB = new Set(users.map((u) => u.code)).size;
   const slots = S.facts.roleSlots || 5, nTicked = D.rows.filter((r) => r.include).length;
+  const phoneBad = demoPhoneProblem(users);
   h += `<div class="tbl"><table class="demo-table"><thead><tr><th>Role</th><th>Placed at</th><th>How many</th></tr></thead><tbody>
     ${D.rows.map((r, i) => `<tr class="${r.include ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" data-dinc="${i}" ${r.include ? 'checked' : ''}> ${esc(r.role)}</label></td>
       <td><select data-dlvl="${i}" aria-label="Level for ${esc(r.role)}">${lvlOpts(r.level)}</select></td>
@@ -432,17 +438,20 @@ function viewDemo() {
     ${!S.facts.roleOptions.length ? `<div class="row"><label for="dAddRole">This template has no role list. Add a role name</label><input type="text" id="dAddRole" placeholder="e.g. Distributor, then press Enter"></div>` : ''}
     <div class="settings">
       <label class="field">Name prefix<input type="text" id="dPrefix" value="${esc(D.prefix)}"></label>
-      <label class="field">First phone number<input type="text" id="dPhone" value="${esc(D.phoneStart)}" inputmode="numeric"></label>
+      <label class="field">First phone number<input type="text" id="dPhone" value="${esc(D.phoneStart)}" inputmode="numeric"${phoneBad ? ' aria-invalid="true"' : ''}></label>
+      <label class="field">Phone number check<select id="dPhoneFmt">${phoneOptions(S.cfg.phoneFmt)}</select></label>
       <label class="field">Employment type${S.facts.employmentOptions.length ? `<select id="dEmp">${S.facts.employmentOptions.map((x) => opt(x, x, D.empType)).join('')}</select>` : `<input type="text" id="dEmp" value="${esc(D.empType)}">`}</label>
       ${activationField('dAct', D.activate, users.map((u) => u.code))}
     </div>
-    <p class="muted small">Phones count up from the first number. Use a range your team controls if the app sends OTPs or SMS.</p>
+    ${phoneBad ? `<p class="small" style="color:var(--err)">Phone numbers ${esc(phoneBad)}. Change the first phone number.</p>` : ''}
+    ${S.facts.targetKeys.length ? `<label class="check"><input type="checkbox" id="dTargets"${D.targets ? ' checked' : ''}> Fill ${S.facts.targetKeys.some((t) => t.mandatory) ? 'mandatory targets' : 'targets'} with demo numbers (the console rejects blank ${S.facts.targetKeys.some((t) => t.mandatory) ? 'mandatory ' : ''}targets)</label>` : ''}
+    <p class="muted small">Phones count up from the first number and are written as numbers. Use a range your team controls if the app sends OTPs or SMS.</p>
     <div class="facts">
       <div class="fact"><span class="mark ok">✓</span><div class="t">${plural(users.length, 'user')} across ${plural(nB, 'boundary', 'boundaries')}
         <div class="d">${users.slice(0, 6).map((u) => `${esc(u.name)} — ${u.roles.length > 1 ? plural(u.roles.length, 'role') : esc(u.roles[0])} — ${esc(u.label)}`).join('<br>')}${users.length > 6 ? `<br>…and ${fmt(users.length - 6)} more` : ''}</div></div></div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button type="button" class="primary" id="dFill"${users.length ? '' : ' disabled'}>Download template with demo users</button>
+      <button type="button" class="primary" id="dFill"${users.length && !phoneBad ? '' : ' disabled'}>Download template with demo users</button>
       <button type="button" class="quiet" id="dList"${users.length ? '' : ' disabled'}>Download user list (.csv)</button>
     </div>
     <div class="status" id="demoStatus" role="status">${esc(S.demoMsg)}</div>`;
@@ -452,10 +461,18 @@ async function demoFill(btn) {
   btn.disabled = true; $('demoStatus').textContent = 'Writing the template…'; await tick();
   try {
     const users = MP.demoUsers(S.tree, demoPlan());
-    const log = await writeTemplate({ users: users.map((u) => ({ code: u.code, name: u.name, phone: u.phone, roles: u.roles })), employmentType: S.demo.empType, activate: activation(S.demo.activate, users.map((u) => u.code)) }, 'demo_users');
-    S.demoMsg = `Added ${plural(log.usersWritten, 'user')}.` + (log.existingUsers ? ` ${plural(log.existingUsers, 'user')} already there were kept.` : '') + (log.facilitiesActivated ? ` ${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '');
+    const log = await writeTemplate({ users: users.map((u) => ({ code: u.code, name: u.name, phone: MP.normPhone(u.phone, S.cfg.phoneFmt).value || u.phone, roles: u.roles })), employmentType: S.demo.empType, activate: activation(S.demo.activate, users.map((u) => u.code)), demoTargets: !!S.demo.targets }, 'demo_users');
+    S.demoMsg = `Added ${plural(log.usersWritten, 'user')}.` + (log.demoTargets ? ` Filled ${plural(log.demoTargets, 'target cell')} with demo numbers.` : '') + mandatoryNote(log) + (log.existingUsers ? ` ${plural(log.existingUsers, 'user')} already there were kept.` : '') + (log.facilitiesActivated ? ` ${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '');
   } catch (err) { console.error(err); S.demoMsg = 'Could not write the template. ' + (err && err.message || err); }
   $('demoStatus').textContent = S.demoMsg; btn.disabled = false;
+}
+/** First and last generated phone must pass the template's phone check, and none may clash with users already there. */
+function demoPhoneProblem(users) {
+  if (!users.length) return '';
+  for (const u of [users[0], users[users.length - 1]]) { const p = MP.normPhone(u.phone, S.cfg.phoneFmt); if (!p.ok) return `${p.reason} (e.g. ${u.phone})`; }
+  const have = new Set(S.facts.existingUsers.map((u) => phoneDigits(u.phone)).filter(Boolean));
+  const hit = users.find((u) => have.has(phoneDigits(u.phone)));
+  return hit ? `would repeat ${hit.phone}, already in the template` : '';
 }
 function demoCsv() {
   const users = MP.demoUsers(S.tree, demoPlan());
@@ -561,7 +578,7 @@ function viewAdd() {
     ${S.open.__paste ? `<div class="form"><label class="small muted" for="aPaste">One person per line: name, phone, role, boundary. Copy straight from Excel (tab-separated) or use commas. A header row is fine; several roles can be separated with “;”.</label>
       <textarea id="aPaste" rows="6" style="font:inherit;font-size:0.88rem;width:100%;border:1px solid var(--line);border-radius:6px;padding:8px;background:var(--surface);color:var(--ink)"></textarea><div><button type="button" id="aPasteGo">Add these rows</button></div></div>` : ''}
     <div class="settings">
-      <label class="field">Phone numbers written as<select id="aPhone">${phoneOptions(S.cfg.phoneFmt)}</select></label>
+      <label class="field">Phone number check<select id="aPhone">${phoneOptions(S.cfg.phoneFmt)}</select></label>
       <label class="field">Employment type${F.employmentOptions.length ? `<select id="aEmp">${F.employmentOptions.map((x) => opt(x, x, addEmp())).join('')}</select>` : `<input type="text" id="aEmp" value="${esc(addEmp())}">`}</label>
       ${activationField('aAct', S.add.activate, C.good.map((r) => r.code))}
     </div>
@@ -609,7 +626,7 @@ async function addSave(btn) {
     const users = C.good.map((r) => ({ code: r.code, name: r.name.trim(), phone: r.phoneOut, roles: r.roles.filter(Boolean) }));
     const log = await writeTemplate({ users, employmentType: addEmp(), activate: activation(S.add.activate, users.map((u) => u.code)) }, 'with_users');
     S.add.msg = `Added ${plural(log.usersWritten, 'user')}${log.existingUsers ? ` after the ${fmt(log.existingUsers)} already there` : ''}.`
-      + (log.facilitiesActivated ? ` ${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '') + (C.live.length > C.good.length ? ` ${plural(C.live.length - C.good.length, 'row')} with problems left out.` : '');
+      + (log.facilitiesActivated ? ` ${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '') + (C.live.length > C.good.length ? ` ${plural(C.live.length - C.good.length, 'row')} with problems left out.` : '') + mandatoryNote(log);
   } catch (err) { console.error(err); S.add.msg = 'Could not write the template. ' + (err && err.message || err); }
   $('addStatus').textContent = S.add.msg; btn.disabled = false;
 }
@@ -683,7 +700,7 @@ function mappingForm(a, ua, usersOnly) {
       <div class="row"><label for="pPhone">Phone column</label><select id="pPhone" data-person="phone">${cols(S.cfg.person.phone)}</select></div>
       <div class="row"><label for="pRole">Designation column</label><select id="pRole" data-person="role">${cols(S.cfg.person.role)}</select></div>`
       + Object.entries(S.cfg.roleMap).map(([d, r], i) => `<div class="row"><label for="role-${i}">“${esc(d)}” becomes</label>${S.facts.roleOptions.length ? `<select id="role-${i}" data-role="${esc(d)}"><option value="">Choose a role</option>${S.facts.roleOptions.map((x) => opt(x, x, r)).join('')}</select>` : `<input type="text" id="role-${i}" data-role="${esc(d)}" value="${esc(r)}">`}</div>`).join('')
-      + `<div class="row"><label for="selPhone">Phone numbers written as</label><select id="selPhone">${phoneOptions(S.cfg.phoneFmt)}</select></div>
+      + `<div class="row"><label for="selPhone">Phone number check</label><select id="selPhone">${phoneOptions(S.cfg.phoneFmt)}</select></div>
       <div class="row"><label for="selEmp">Employment type</label>${S.facts.employmentOptions.length ? `<select id="selEmp">${S.facts.employmentOptions.map((x) => opt(x, x, S.cfg.empType)).join('')}</select>` : `<input type="text" id="selEmp" value="${esc(S.cfg.empType)}">`}</div>
       <label class="check"><input type="checkbox" id="skipBad"${S.cfg.skipBadUsers ? ' checked' : ''}> Leave out users with a bad phone number or an unknown facility</label>`;
   }
@@ -801,7 +818,14 @@ function viewExport() {
   const editsBox = E.log.length ? `<div class="fact"><span class="mark ok">✓</span><div class="t">${plural(E.log.length, 'edit')} to the microplan
     <div class="choices" style="margin-top:4px;gap:2px"><button type="button" class="quiet" data-toggle="__edits">${S.open.__edits ? 'Hide' : 'Show'}</button><button type="button" class="quiet" id="dlCorrected">Download corrected microplan</button></div>
     ${S.open.__edits ? `<ul class="small" style="margin:6px 0 0;padding-left:18px">${E.log.slice().reverse().map((e) => `<li>${esc(e.desc)} <button type="button" class="quiet" data-undoedit="${e.id}">Undo</button></li>`).join('')}</ul>` : ''}</div></div>` : '';
+  // the console rejects target rows with a blank mandatory target
+  const mand = R.matched.length ? S.facts.targetKeys.filter((t) => t.mandatory) : [];
+  const unmapped = mand.filter((t) => S.cfg.targetMap[t.key] === '' || S.cfg.targetMap[t.key] == null);
+  const mandBox = unmapped.length || (mand.length && rows > filled) ? `<div class="fact"><span class="mark warn">!</span><div class="t">Mandatory targets will be blank
+    <div class="d">${unmapped.length ? `No microplan column for ${unmapped.map((t) => '“' + esc(t.label.replace(/\s*\(.*$/, '')) + '”').join(', ')}. ` : ''}${rows > filled ? `${plural(rows - filled, 'row')} have no microplan value. ` : ''}The console rejects rows with a blank mandatory target.</div>
+    <div class="choices" style="margin-top:4px;gap:2px">${unmapped.length ? '<button type="button" class="quiet" data-nav="2">Map columns</button>' : ''}${rows > filled && !S.cfg.liftSingle ? '<button type="button" class="quiet" data-act="spread">Spread parent totals</button>' : ''}</div></div></div>` : '';
   return `<div class="intro"><h2>${headline}</h2><p class="muted small">${lines.join(' · ')}</p></div>
+    ${mandBox ? `<div class="facts">${mandBox}</div>` : ''}
     ${active.length || lifted || editsBox ? `<div class="facts">${editsBox}${lifted}${active.map(issueGroup).join('')}</div>` : ''}
     ${acked.length ? `<details class="edit"><summary>${plural(acked.length, 'check')} marked as OK</summary><div class="facts">${acked.map((g) => `<div class="fact"><span class="mark ok">✓</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span><div class="d"><button type="button" class="quiet" data-unack="${esc(g.rule)}">Undo</button></div></div></div>`).join('')}</div></details>` : ''}
     ${S.facts.facilityCount ? `<div class="settings">${activationField('selAct', S.activate, usedCodes())}</div>` : ''}
@@ -1072,6 +1096,8 @@ view.addEventListener('change', async (e) => {
     else if (t.id === 'dAllCnt') D.allRoles.count = n(t.value);
     else if (t.id === 'dPrefix') D.prefix = t.value || 'Demo';
     else if (t.id === 'dPhone') D.phoneStart = t.value.replace(/\D/g, '');
+    else if (t.id === 'dPhoneFmt') S.cfg.phoneFmt = t.value;
+    else if (t.id === 'dTargets') D.targets = t.checked;
     else if (t.id === 'dEmp') D.empType = t.value;
     else if (t.id === 'dAct') D.activate = t.value;
     else if (t.id === 'dAddRole') { const r = t.value.trim(); if (r) D.rows.push({ role: r, include: true, level: MP.defaultRoleLevel(S.tree, r), count: 2 }); }
@@ -1110,7 +1136,7 @@ async function fillAndSave(btn) {
     S.exportMsg = [R.matched.length ? `Wrote ${plural(log.targetsWritten, 'target cell')} and ${plural(log.usersWritten, 'user')}.` : `Added ${plural(log.usersWritten, 'user')}.`,
       log.existingUsers ? `${plural(log.existingUsers, 'user')} already there were kept.` : '',
       log.facilitiesActivated ? `${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '',
-      log.targetMissing.length ? plural(log.targetMissing.length, 'target row') + ' left blank (listed in the report).' : ''].filter(Boolean).join(' ');
+      log.targetMissing.length ? plural(log.targetMissing.length, 'target row') + ' left blank (listed in the report).' : '', mandatoryNote(log).trim()].filter(Boolean).join(' ');
   } catch (err) { console.error(err); S.exportMsg = 'Could not write the template. ' + (err && err.message || err); }
   $('expStatus').textContent = S.exportMsg; btn.disabled = false;
 }
@@ -1146,7 +1172,7 @@ function saveReport() {
 
 function clearAll() {
   Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {}, activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' } });
-  S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: '11', empType: '', skipBadUsers: true };
+  S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: 'ng', empType: '', skipBadUsers: true };
 }
 
 // ───────── example: a console-style template and a microplan built in memory ─────────

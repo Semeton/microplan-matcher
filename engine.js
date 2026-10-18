@@ -570,38 +570,38 @@
   }
 
   // ───────────────────────── phones ─────────────────────────
-  /** Phone formats: Nigeria '11' (08031234567) / '10' (8031234567) / 'intl' (+234…); Sierra Leone 'sl' (076123456) /
-   *  'sl-intl' (+23276123456); 'raw' keeps the digits as typed (7–15 digits). */
-  const PHONE_FORMATS = { '11': 'NG', '10': 'NG', intl: 'NG', sl: 'SL', 'sl-intl': 'SL', raw: '' };
+  /** Phones are written to the template as numbers, so the value is the national number without its leading 0:
+   *  'ng' Nigeria 10 digits (8031234567; 11-digit numbers without a leading 0 are kept as given), 'sl' Sierra Leone
+   *  8 digits (76123456), 'raw' any 7–15 digits. Only the digit count is checked, not network prefixes. */
+  const PHONE_ALIAS = { '11': 'ng', '10': 'ng', intl: 'ng', 'sl-intl': 'sl' };
+  const PHONE_FORMATS = { ng: 'Nigeria', sl: 'Sierra Leone', raw: '' };
   function phoneCountry(tree) {
     const r = tree && tree.nodes.get(tree.roots[0]); const t = r ? (r.code + ' ' + r.path[0] + ' ' + r.name).toUpperCase() : '';
     if (/SIERRA|SIERRALEONE|_SI\b|\bSL\b/.test(t)) return 'sl';
-    if (/NIGERIA|_NI\b|\bNG\b|\bNI\b/.test(t)) return '11';
+    if (/NIGERIA|_NI\b|\bNG\b|\bNI\b/.test(t)) return 'ng';
     return 'raw';
   }
   function normPhone(raw, fmt) {
-    let d = cellStr(raw).replace(/\.0+$/, '').replace(/[^\d+]/g, '');
+    fmt = PHONE_ALIAS[fmt] || fmt;
+    let d = cellStr(raw).replace(/\.0+$/, '').replace(/\D/g, '');
     if (!d) return { ok: false, value: '', reason: 'blank' };
-    d = d.replace(/^\+/, '').replace(/^00/, '');
-    if (fmt === 'raw') {
-      const ok = d.length >= 7 && d.length <= 15;
-      return { ok, value: d, reason: ok ? '' : 'phone should have 7–15 digits' };
+    if (fmt === 'sl') {
+      if (d.startsWith('232') && d.length === 11) d = d.slice(3);
+      if (d.length === 9 && d.startsWith('0')) d = d.slice(1);
+      const ok = d.length === 8 && !d.startsWith('0');
+      return { ok, value: d, reason: ok ? '' : `should have 8 digits after the leading 0 (has ${d.replace(/^0/, '').length})` };
     }
-    if (fmt === 'sl' || fmt === 'sl-intl') {
-      if (d.startsWith('232') && d.length === 11) d = '0' + d.slice(3);
-      if (d.length === 8) d = '0' + d;
-      const ok = /^0\d{8}$/.test(d);
-      return { ok, value: ok && fmt === 'sl-intl' ? '+232' + d.slice(1) : d, reason: ok ? '' : `should have 9 digits, 0 + 8 (has ${d.length})` };
+    if (fmt === 'ng') {
+      if (d.startsWith('234') && d.length === 13) d = d.slice(3);
+      if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+      const ok = (d.length === 10 || d.length === 11) && !d.startsWith('0');
+      return { ok, value: d, reason: ok ? '' : `should have 10 digits after the leading 0 (has ${d.replace(/^0/, '').length})` };
     }
-    if (d.startsWith('234') && d.length === 13) d = '0' + d.slice(3);
-    // digit count only (no network-prefix check): 11 digits, or 10 with the leading 0 added
-    if (d.length === 10 && !d.startsWith('0')) d = '0' + d;
-    const ok = d.length === 11;
-    let value = d;
-    if (ok && fmt === '10' && d.startsWith('0')) value = d.slice(1);
-    if (ok && fmt === 'intl' && d.startsWith('0')) value = '+234' + d.slice(1);
-    return { ok, value, reason: ok ? '' : `should have 11 digits (has ${d.length})` };
+    d = d.replace(/^0+/, '');
+    const ok = d.length >= 7 && d.length <= 15;
+    return { ok, value: d, reason: ok ? '' : `should have 7–15 digits (has ${d.length})` };
   }
+
 
   // ───────────────────────── validation ─────────────────────────
   function validate(ctx) {

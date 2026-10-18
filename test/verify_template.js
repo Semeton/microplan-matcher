@@ -32,7 +32,7 @@ function dvRanges(xml) {
 
 async function verify(origU8, outU8) {
   const O = await MPW.loadTemplate(ExcelJS, origU8), F = await MPW.loadTemplate(ExcelJS, outU8);
-  const report = { structure: [], users: 0, mismatches: { code: 0, dropdown: 0, helper: 0, role: 0 }, examples: [], dv: [], facilities: {}, rowIdOnNew: 0 };
+  const report = { structure: [], users: 0, mismatches: { code: 0, dropdown: 0, helper: 0, role: 0 }, examples: [], dv: [], facilities: {}, rowIdOnNew: 0, textPhones: 0, mandatoryBlank: 0 };
   // structure
   const hiddenCols = (ws) => { const s = []; for (let c = 1; c <= ws.columnCount; c++) if (ws.getColumn(c).hidden) s.push(c); return s.join(','); };
   for (const wo of O.worksheets) {
@@ -100,10 +100,12 @@ async function verify(origU8, outU8) {
       if (c !== want) { report.mismatches.code++; ex(`code ${c} ≠ ${want}`); }
       const rs = roleKeys.map((k) => val(row.getCell(hm[k]).value)).filter(Boolean);
       if (roleOK.size && rs.some((x) => !roleOK.has(x))) { report.mismatches.role++; ex('role ' + rs.join(',')); }
+      if (hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER) { const pv = row.getCell(hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER).value; if (pv != null && pv !== '' && typeof pv !== 'number') { report.textPhones++; ex('phone stored as text: ' + pv); } }
+      for (const [k, c] of Object.entries(hm)) if (/mandatory/i.test(val(wf.getRow(2).getCell(c).value)) && !val(row.getCell(c).value)) { report.mandatoryBlank++; ex('blank mandatory ' + k); }
       if (hm.HCM_ADMIN_CONSOLE____ROW_ID && !origRows.has(r) && val(row.getCell(hm.HCM_ADMIN_CONSOLE____ROW_ID).value)) report.rowIdOnNew++;
     });
   }
-  report.ok = !report.structure.length && !report.dv.length && !Object.values(report.mismatches).some(Boolean) && !report.rowIdOnNew;
+  report.ok = !report.structure.length && !report.dv.length && !Object.values(report.mismatches).some(Boolean) && !report.rowIdOnNew && !report.textPhones && !report.mandatoryBlank;
   return report;
 }
 
