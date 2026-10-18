@@ -300,7 +300,7 @@
     ['dp', /distribution point/],
     ['community', /communit|settlement|village|hamlet|locality|\bcatchment\b(?! settlements)/],
   ];
-  const NOT_HIER = /number|count|no\.|total|target|population|%|dhis|\bid\b|code|uid|latitude|longitude|gps|phone|difficult|nomadic|riverine|idp|terrain|migrant/;
+  const NOT_HIER = /number|count|no\.|total|target|population|%|dhis|\bid\b|code|uid|latitude|longitude|gps|phone|difficult|nomadic|riverine|idp|terrain|migrant|summary|\bform\b|booklet|sheets?\b|register|tally|card/;
 
   function hierKind(label) {
     const l = basicNorm(label);
@@ -354,7 +354,7 @@
       if (col.kind) continue;
       const hl = basicNorm(header[c]);
       const boundaryish = !hl || /boundary|level|below|hamlet|locality|sub ?ward|cluster|zone|block|catchment/.test(hl);
-      if (col.textual && col.n > 0 && boundaryish && !NOT_HIER.test(hl) && !/\bname\b(?!.*boundary)|phone|designation|role|cadre|bank|account/.test(hl)) { col.kind = 'deeper'; } else break;
+      if (col.textual && col.n > 0 && boundaryish && !NOT_HIER.test(hl) && !/(?<!level |boundary |location |facility )\bname\b(?!.*boundary)|phone|designation|role|cadre|bank|account/.test(hl)) { col.kind = 'deeper'; } else break;
     }
     // drop duplicate hierarchy columns (identical values) – keep the right-most
     const hier = cols.filter((x) => x.kind);
@@ -389,6 +389,9 @@
       const names = hcols.map((c) => cellStr(row[c]));
       if (!names.some(Boolean)) continue;
       if (names.some((n) => /^(grand )?total\b|^sub ?total/i.test(n))) continue;
+      // a second header line ("State | Lga | Ward | Facility name") or a totals line with counts in the name columns
+      if (names.filter((n) => n && hierKind(n)).length >= 2) continue;
+      if (names.filter(Boolean).every((n) => /^\d+(\.\d+)?$/.test(n))) continue;
       let deepest = names.length - 1; while (deepest >= 0 && !names[deepest]) deepest--;
       // forward-fill blanks that sit above a filled deeper level (merged-cell style sheets)
       for (let i = 0; i < deepest; i++) if (!names[i] && prev[i]) names[i] = prev[i];

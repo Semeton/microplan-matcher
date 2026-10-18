@@ -3,6 +3,7 @@
 Turns a campaign microplan into a filled DIGIT HCM unified template, entirely in the browser.
 
 1. **Files** – the unified template downloaded from the HCM console for the campaign (empty, or already holding users), plus the microplan (v4.1 HF-level microplan, DIGIT Master Data template, MC-style master data with a user list, or just a user list).
+   Microplans split into one sheet per LGA (same layout) are read together; summary sheets, repeated header lines and total rows are skipped.
 2. **Check columns** – boundary levels, target columns and user columns are detected automatically; edit only if something is wrong.
 3. **Resolve names** – each distinct boundary name is matched level by level against the template's boundary codes. Only names that need a person are shown; choices are remembered in the browser and can be exported/imported as JSON for the next cycle.
 4. **Export** – pre-ingestion checks shown with the rows they affect. Fix a problem by editing the row (phone, name, target, boundary name — a boundary rename applies to every row that uses it), removing it, or adding a missing OIC/CDD per facility. Phones already used by people in the template are flagged. Every edit is logged with undo, and a corrected microplan can be downloaded alongside the filled template and a match report. Facilities in the microplan's area (or all, or none) are set to Active.

@@ -321,11 +321,20 @@ function analyse() {
   const boundaryC = cands.filter((a) => !(a.person.name && a.person.phone));
   const userC = cands.filter((a) => a.person.name && a.person.phone);
   const best = boundaryC.sort((a, b) => b.nRows - a.nRows)[0];
-  S.cfg.sheet = best ? best.sheet : null; S.cfg.extra = [];
+  S.cfg.sheet = best ? best.sheet : null; S.cfg.extra = similarSheets(best);
   S.cfg.userSheet = userC.length ? userC.sort((a, b) => b.nRows - a.nRows)[0].sheet : null;
   setupBoundarySheet(); setupUserSheet();
 }
 const A = (name) => S.analyses.find((a) => a && a.sheet === name);
+/** Microplans split by LGA (one sheet each, same layout) are read together: sheets whose boundary columns have the
+ *  same labels in the same positions as the main sheet. Summary sheets use different headers and are left out. */
+const sheetSig = (a) => a.cols.filter((c) => c.kind).map((c) => c.c + ':' + MP.basicNorm(c.label)).join('|');
+function similarSheets(best) {
+  if (!best) return [];
+  const sig = sheetSig(best);
+  return S.analyses.filter((a) => a && a !== best && !(a.person.name && a.person.phone) && sheetSig(a) === sig).map((a) => a.sheet);
+}
+const rowsAll = () => [S.cfg.sheet].concat(S.cfg.extra).reduce((n, name) => n + ((A(name) || {}).nRows || 0), 0);
 function setupBoundarySheet() {
   const a = A(S.cfg.sheet); if (!a || !S.tree) { S.cfg.levelMap = {}; S.cfg.targetMap = {}; return; }
   S.cfg.levelMap = MP.autoLevelMap(a, S.tree);
@@ -644,7 +653,7 @@ function viewFiles() {
   const tplMeta = S.tree ? `${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')} · ${S.tree.levelLabels.length} levels` : '';
   const a = S.cfg.sheet && A(S.cfg.sheet);
   const ua0 = S.cfg.userSheet && A(S.cfg.userSheet);
-  const mpMeta = S.mpSheets.length ? (a ? `${plural(a.nRows, 'row')} on “${esc(S.cfg.sheet)}”` : ua0 ? `${plural(ua0.nRows, 'person', 'people')} on “${esc(S.cfg.userSheet)}”, no targets` : 'No sheet with State / LGA / Ward columns found') : '';
+  const mpMeta = S.mpSheets.length ? (a ? (S.cfg.extra.length ? `${plural(rowsAll(), 'row')} on ${S.cfg.extra.length + 1} sheets with the same layout` : `${plural(a.nRows, 'row')} on “${esc(S.cfg.sheet)}”`) : ua0 ? `${plural(ua0.nRows, 'person', 'people')} on “${esc(S.cfg.userSheet)}”, no targets` : 'No sheet with State / LGA / Ward columns found') : '';
   return `<div class="intro"><h2>Add the two files</h2><p class="muted small">The template comes from the console for this campaign. It can already hold users; new ones are added after them. The microplan can be a v4.1 microplan, a Master Data sheet, or just a user list.</p></div>
     <div class="files">
       ${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}
@@ -666,7 +675,7 @@ function viewColumns() {
   const unmappedRoles = Object.values(S.cfg.roleMap).filter((r) => !r).length;
   const fact = (state, title, detail) => `<div class="fact"><span class="mark ${state}">${state === 'ok' ? '✓' : '!'}</span><div class="t">${title}${detail ? `<div class="d">${detail}</div>` : ''}</div></div>`;
   const facts = [
-    a ? fact('ok', `Rows from <b>${esc(S.cfg.sheet)}</b>`, plural(a.nRows, 'row')) : fact('ok', 'User list only', 'No target rows in this file; only users are added'),
+    a ? fact('ok', S.cfg.extra.length ? `Rows from ${S.cfg.extra.length + 1} sheets` : `Rows from <b>${esc(S.cfg.sheet)}</b>`, S.cfg.extra.length ? `${plural(rowsAll(), 'row')} · ${[S.cfg.sheet].concat(S.cfg.extra).map(esc).join(', ')}` : plural(a.nRows, 'row')) : fact('ok', 'User list only', 'No target rows in this file; only users are added'),
     fact(mappedLv.length >= 2 ? 'ok' : 'err', 'Boundary columns', mappedLv.length ? mappedLv.join(' › ') : 'None mapped'),
     !a ? '' : tk.length ? fact(tFilled.length === tk.length ? 'ok' : 'warn', 'Targets', tFilled.length ? tFilled.map((t) => `${esc(t.label)} ← ${esc((a.cols[S.cfg.targetMap[t.key]] || {}).label)}`).join('<br>') + (tFilled.length < tk.length ? `<br>${tk.length - tFilled.length} template column${tk.length - tFilled.length > 1 ? 's' : ''} left blank` : '') : 'No target columns matched')
       : fact('ok', 'Targets', 'This template has no target sheet'),
@@ -687,6 +696,7 @@ function mappingForm(a, ua, usersOnly) {
   const sheets = S.analyses.filter((x) => x && x.cols.filter((c) => c.kind).length >= 2);
   let h = `<div class="form">
     <div class="row"><label for="selSheet">Sheet with boundary rows</label><select id="selSheet">${opt('', 'None (user list only)', S.cfg.sheet || '')}${sheets.map((x) => opt(x.sheet, `${x.sheet} (${fmt(x.nRows)} rows)`, S.cfg.sheet)).join('')}</select></div>
+    ${!usersOnly && sheets.length > 1 ? `<div class="row"><label>Also read these sheets <span class="muted small">(same columns)</span></label><div style="display:flex;flex-wrap:wrap;gap:4px 12px">${sheets.filter((x) => x.sheet !== S.cfg.sheet && !(x.person.name && x.person.phone)).map((x) => `<label class="check"><input type="checkbox" data-extra="${esc(x.sheet)}"${S.cfg.extra.includes(x.sheet) ? ' checked' : ''}> ${esc(x.sheet)}</label>`).join('')}</div></div>` : ''}
     <div class="group-title">Boundary levels${usersOnly ? ' in the user list' : ''}</div>
     ${hierCols.map((c) => `<div class="row"><label for="lvl-${c.c}">${esc(c.label)} <span class="mono">${MP.colLetter(c.c)}</span></label><select id="lvl-${c.c}" data-lvl="${c.c}"${usersOnly ? ' data-ulvl="1"' : ''}>${lv(lmap[c.c] ?? '')}</select></div>`).join('')}`;
   if (S.facts.targetKeys.length && !usersOnly) {
@@ -1105,7 +1115,8 @@ view.addEventListener('change', async (e) => {
     S.demoMsg = ''; render(); return;
   }
   // column edits
-  if (t.id === 'selSheet') { S.cfg.sheet = t.value || null; setupBoundarySheet(); }
+  if (t.id === 'selSheet') { S.cfg.sheet = t.value || null; S.cfg.extra = similarSheets(A(S.cfg.sheet)); setupBoundarySheet(); }
+  else if (t.dataset.extra !== undefined) { S.cfg.extra = S.cfg.extra.filter((x) => x !== t.dataset.extra).concat(t.checked ? [t.dataset.extra] : []); }
   else if (t.dataset.lvl !== undefined) { const m = t.dataset.ulvl ? S.cfg.userLevelMap : S.cfg.levelMap; if (t.value === '') delete m[t.dataset.lvl]; else m[t.dataset.lvl] = Number(t.value); }
   else if (t.dataset.tgt !== undefined) S.cfg.targetMap[t.dataset.tgt] = t.value;
   else if (t.id === 'selSplit') S.cfg.splitMode = t.value;

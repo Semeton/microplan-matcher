@@ -45,7 +45,8 @@ async function verify(origU8, outU8) {
   const ro = rawSheets(origU8), rf = rawSheets(outU8);
   for (const n of Object.keys(ro)) { const p = /<sheetProtection\b[^>]*>/.exec(ro[n]), q = /<sheetProtection\b[^>]*>/.exec(rf[n] || ''); if (p && (!q || q[0] !== p[0])) report.structure.push(`${n}: protection element changed`); }
   // lookup sheet
-  const L = F.getWorksheet('_h_SimpleLookup_h_');
+  const hasLookup = !!F.getWorksheet('_h_SimpleLookup_h_');
+  const L = F.getWorksheet('_h_SimpleLookup_h_') || { eachRow() {} }; // templates without a lookup sheet: dropdown checks are skipped
   const name2code = new Map(), pathRow = new Map(), name2hash = new Map();
   L.eachRow((row, r) => {
     const a = val(row.getCell(1).value), d = val(row.getCell(4).value), e = val(row.getCell(5).value), i = val(row.getCell(9).value), j = val(row.getCell(10).value);
@@ -86,7 +87,7 @@ async function verify(origU8, outU8) {
       report.users++;
       const p = lv.map((k) => val(row.getCell(hm[k]).value)); let depth = -1; p.forEach((x, i) => { if (x) depth = i; });
       const ex = (what) => { if (report.examples.length < 6) report.examples.push(`row ${r}: ${what}`); };
-      for (let i = 0; i <= depth; i++) {
+      for (let i = 0; i <= depth && hasLookup; i++) {
         const hk = lv[i] + '_HELPER'; let ok;
         if (hm[hk]) {
           const h = val(row.getCell(hm[hk]).value), want = i ? name2hash.get(p.slice(0, i).join('#')) || '' : name2hash.get('') || '';
@@ -97,7 +98,7 @@ async function verify(origU8, outU8) {
         if (!ok) { report.mismatches.dropdown++; ex(`${lv[i]} “${p[i]}” not offered by the dropdown`); }
       }
       const c = val(row.getCell(hm.HCM_ADMIN_CONSOLE_BOUNDARY_CODE).value), want = name2code.get(p.slice(0, depth + 1).join('#'));
-      if (c !== want) { report.mismatches.code++; ex(`code ${c} ≠ ${want}`); }
+      if (hasLookup && c !== want) { report.mismatches.code++; ex(`code ${c} ≠ ${want}`); }
       const rs = roleKeys.map((k) => val(row.getCell(hm[k]).value)).filter(Boolean);
       if (roleOK.size && rs.some((x) => !roleOK.has(x))) { report.mismatches.role++; ex('role ' + rs.join(',')); }
       if (hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER) { const pv = row.getCell(hm.HCM_ADMIN_CONSOLE_USER_PHONE_NUMBER).value; if (pv != null && pv !== '' && typeof pv !== 'number') { report.textPhones++; ex('phone stored as text: ' + pv); } }
