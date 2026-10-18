@@ -379,6 +379,8 @@
    * levelMap: { [colIndex]: templateLevelIndex }  (columns not in map are ignored)
    * valueCols: [colIndex]  numeric columns to carry
    */
+  // a cell that is only a level word ("Lga", "Ward", "Facility name") — a repeated header line, not a place
+  const HEADER_WORDS = /^(country|state|lga|l g a|ward|wards|district|chiefdom|province|region|zone|(health )?facility( name)?|name of (health )?facility|hf|phc|settlements?|communit(y|ies)|village|hamlet|locality|level name)$/;
   function extractRecords(sheet, analysis, levelMap, valueCols, personCols) {
     const rows = sheet.rows || [];
     const hcols = Object.keys(levelMap).map(Number).sort((a, b) => levelMap[a] - levelMap[b]);
@@ -390,7 +392,7 @@
       if (!names.some(Boolean)) continue;
       if (names.some((n) => /^(grand )?total\b|^sub ?total/i.test(n))) continue;
       // a second header line ("State | Lga | Ward | Facility name") or a totals line with counts in the name columns
-      if (names.filter((n) => n && hierKind(n)).length >= 2) continue;
+      if (names.filter((n) => n && HEADER_WORDS.test(basicNorm(n))).length >= 2) continue;
       if (names.filter(Boolean).every((n) => /^\d+(\.\d+)?$/.test(n))) continue;
       let deepest = names.length - 1; while (deepest >= 0 && !names[deepest]) deepest--;
       // forward-fill blanks that sit above a filled deeper level (merged-cell style sheets)
