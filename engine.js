@@ -572,7 +572,7 @@
   // ───────────────────────── phones ─────────────────────────
   /** Phones are written to the template as numbers, so the value is the national number without its leading 0:
    *  'ng' Nigeria 10 digits (8031234567; 11-digit numbers without a leading 0 are kept as given), 'sl' Sierra Leone
-   *  8 digits (76123456), 'raw' any 7–15 digits. Only the digit count is checked, not network prefixes. */
+   *  9 digits (761234567), 'raw' any 7–15 digits. Only the digit count is checked, not network prefixes. */
   const PHONE_ALIAS = { '11': 'ng', '10': 'ng', intl: 'ng', 'sl-intl': 'sl' };
   const PHONE_FORMATS = { ng: 'Nigeria', sl: 'Sierra Leone', raw: '' };
   function phoneCountry(tree) {
@@ -586,10 +586,10 @@
     let d = cellStr(raw).replace(/\.0+$/, '').replace(/\D/g, '');
     if (!d) return { ok: false, value: '', reason: 'blank' };
     if (fmt === 'sl') {
-      if (d.startsWith('232') && d.length === 11) d = d.slice(3);
-      if (d.length === 9 && d.startsWith('0')) d = d.slice(1);
-      const ok = d.length === 8 && !d.startsWith('0');
-      return { ok, value: d, reason: ok ? '' : `should have 8 digits after the leading 0 (has ${d.replace(/^0/, '').length})` };
+      if (d.startsWith('232') && d.length === 12) d = d.slice(3);
+      d = d.replace(/^0+(?=\d{9}$)/, '');
+      const ok = d.length === 9 && !d.startsWith('0');
+      return { ok, value: d, reason: ok ? '' : `should have 9 digits after any leading 0 (has ${d.replace(/^0+/, '').length})` };
     }
     if (fmt === 'ng') {
       if (d.startsWith('234') && d.length === 13) d = d.slice(3);

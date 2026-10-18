@@ -215,7 +215,7 @@ function initDemo() {
   S.demo = {
     rows: roles.map((role) => ({ role, include: true, level: MP.defaultRoleLevel(S.tree, role), count: roles.length > 6 ? 1 : 2 })),
     allRoles: { on: true, level: hf >= 0 ? hf : Math.min(S.tree.depth, 4), count: 1 },
-    prefix: 'Demo', phoneStart: MP.phoneCountry(S.tree) === 'sl' ? '99990001' : '9099990001', activate: 'all', targets: true,
+    prefix: 'Demo', phoneStart: MP.phoneCountry(S.tree) === 'sl' ? '999900001' : '9099990001', activate: 'all', targets: true,
     empType: S.facts.employmentOptions.find((x) => /temp/i.test(x)) || S.facts.employmentOptions[0] || 'Temporary',
   };
 }
@@ -294,7 +294,7 @@ function activationField(id, mode, codes, label) {
 /** Same number with or without its leading 0 or country code → one key. */
 const phoneDigits = (v) => { const raw = String(v == null ? '' : v).replace(/\.0+$/, ''); if (!raw.replace(/\D/g, '')) return ''; return MP.normPhone(raw, S.cfg.phoneFmt).value.replace(/^0+/, ''); };
 function phoneOptions(cur) {
-  return opt('ng', 'Nigeria · 10 digits (8031234567)', cur) + opt('sl', 'Sierra Leone · 8 digits (76123456)', cur) + opt('raw', 'Any · 7–15 digits', cur);
+  return opt('ng', 'Nigeria · 10 digits (8031234567)', cur) + opt('sl', 'Sierra Leone · 9 digits (761234567)', cur) + opt('raw', 'Any · 7–15 digits', cur);
 }
 async function loadMicroplan(buf, name) {
   S.mpName = name; S.mpOrig = sheetsFromXLSX(buf, true);

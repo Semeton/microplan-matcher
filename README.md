@@ -30,7 +30,7 @@ Console conventions the code relies on (checked against Kambia LLIN, Bednet 2026
 - Two template generations are supported:
   - **Helper style** (ExcelJS-built): `<LEVEL>_HELPER` columns hold `INDEX/MATCH` formulas returning `H_` + SHA-256 of the codes of levels 0…*i*-1 joined with `#`; each level's dropdown is `INDIRECT(<helper>&"_LIST")`; the boundary code is a `VLOOKUP` formula. Some of these templates use codes as boundary names; the app shows a readable name derived from the code but writes the code.
   - **POI style** (newer): no helper columns; dropdowns are `INDIRECT("_hL"&MATCH(path, _h_SimpleLookup_h_!A:A, 0))`, the code is a plain value, the Boundary List sheet may be protected, and rows only exist where used (dropdowns are prepared to row 5,002 or 20,002). `HCM_ADMIN_CONSOLE____ROW_ID` is left blank on new rows.
-- Phones are written as numbers (no text-stored digits or apostrophe), so the leading 0 is dropped: Nigeria 10 digits, Sierra Leone 8, otherwise 7–15. Only the digit count is checked; duplicates against the template are blocked. Text phones already in the sheet are converted too.
+- Phones are written as numbers (no text-stored digits or apostrophe), so the leading 0 is dropped: Nigeria 10 digits, Sierra Leone 9, otherwise 7–15. Only the digit count is checked; duplicates against the template are blocked. Text phones already in the sheet are converted too.
 - Columns whose row-2 label says "Mandatory" are checked after writing and any blanks are reported. Demo users can fill mandatory target columns with demo numbers (on by default), since the console rejects target rows left blank.
 - Target sheets are any sheet with `HCM_ADMIN_CONSOLE_BOUNDARY_CODE` plus a `…TARGET…` column; values are written by boundary code.
 
