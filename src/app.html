@@ -294,7 +294,7 @@ function activationField(id, mode, codes, label) {
 /** Same number with or without its leading 0 or country code → one key. */
 const phoneDigits = (v) => { const raw = String(v == null ? '' : v).replace(/\.0+$/, ''); if (!raw.replace(/\D/g, '')) return ''; return MP.normPhone(raw, S.cfg.phoneFmt).value.replace(/^0+/, ''); };
 function phoneOptions(cur) {
-  return opt('ng', 'Nigeria · 10 digits (8031234567)', cur) + opt('sl', 'Sierra Leone · 9 digits (761234567)', cur) + opt('raw', 'Any · 7–15 digits', cur);
+  return opt('ng', 'Nigeria (10 digits)', cur) + opt('sl', 'Sierra Leone (9 digits)', cur) + opt('raw', 'Any (7–15 digits)', cur);
 }
 async function loadMicroplan(buf, name) {
   S.mpName = name; S.mpOrig = sheetsFromXLSX(buf, true);
@@ -347,10 +347,10 @@ function setupUserSheet(keepPerson) {
   S.cfg.userLevelMap = MP.autoLevelMap(a, S.tree);
   if (!keepPerson) S.cfg.person = { name: a.person.name ? a.person.name.c : '', phone: a.person.phone ? a.person.phone.c : '', role: a.person.role ? a.person.role.c : '' };
   const sh = S.mpSheets.find((s) => s.name === S.cfg.userSheet);
-  const roles = new Set();
-  if (S.cfg.person.role !== '' && S.cfg.person.role != null) for (let r = a.headerRow + 1; r < sh.rows.length; r++) { const v = MP.cellStr((sh.rows[r] || [])[S.cfg.person.role]); if (v) roles.add(v); }
-  S.cfg.roleMap = {};
-  Array.from(roles).slice(0, 60).forEach((d) => (S.cfg.roleMap[d] = MPW.guessRole(d, S.facts.roleOptions) || ''));
+  const roles = new Map();
+  if (S.cfg.person.role !== '' && S.cfg.person.role != null) for (let r = a.headerRow + 1; r < sh.rows.length; r++) { const v = MP.cellStr((sh.rows[r] || [])[S.cfg.person.role]); if (v) roles.set(v, (roles.get(v) || 0) + 1); }
+  S.cfg.roleMap = {}; S.cfg.roleCount = Object.fromEntries(roles);
+  Array.from(roles.keys()).sort((x, y) => roles.get(y) - roles.get(x)).forEach((d) => (S.cfg.roleMap[d] = MPW.guessRole(d, S.facts.roleOptions) || ''));
   if (!S.cfg.empType) S.cfg.empType = S.facts.employmentOptions.find((x) => /temp/i.test(x)) || S.facts.employmentOptions[0] || 'Temporary';
 }
 
@@ -379,7 +379,7 @@ function run() {
     const um = MP.matchRecords(S.tree, MP.extractRecords(ush, ua, S.cfg.userLevelMap, [], S.cfg.person), S.aliases);
     uDecisions = um.decisions;
     users = um.matched.filter((u) => u.person).map((u) => {
-      const role = S.cfg.roleMap[u.person.role] || '';
+      const d = u.person.role; const role = Object.prototype.hasOwnProperty.call(S.cfg.roleMap, d) ? S.cfg.roleMap[d] : (MPW.guessRole(d, S.facts.roleOptions) || '');
       return Object.assign(u, { ref: u.sheet + '!' + u.row, phoneNorm: MP.normPhone(u.person.phone, S.cfg.phoneFmt), role, roleKind: MPW.roleKind(role) });
     });
   }
@@ -388,6 +388,7 @@ function run() {
   const issues = MP.validate({ tree: S.tree, matched, agg, valueCols, valueLabels, users: users.filter((u) => !u.skipped), hfLevel: hfLevel >= 0 ? hfLevel : null, specialCharsCheck: true });
   // people already in the template (adding to a filled template): the console rejects a phone used twice
   const have = new Map(S.facts.existingUsers.filter((u) => phoneDigits(u.phone)).map((u) => [phoneDigits(u.phone), u]));
+  for (const u of users) if (u.code && !u.role) issues.push({ severity: 'error', rule: 'No role', message: `${u.person.name || 'Person'}: designation “${u.person.role || '(blank)'}” is not a role in this template`, ref: u.ref });
   for (const u of users) { const hit = u.phoneNorm.ok && have.get(phoneDigits(u.phoneNorm.value)); if (hit) { u.phoneNorm = Object.assign({}, u.phoneNorm, { ok: false, reason: `already in the template (${hit.name}, row ${hit.row})` }); issues.push({ severity: 'error', rule: 'Phone already in template', message: `${u.person.name}: ${u.phoneNorm.value || u.person.phone} is already used by ${hit.name} (template row ${hit.row})`, ref: u.ref }); } }
   const dmap = new Map();
   for (const d of decisions.concat(uDecisions)) { const e = dmap.get(d.key); if (e) { e.count += d.count; e.rows = e.rows.concat(d.rows).slice(0, 5); } else dmap.set(d.key, Object.assign({}, d)); }
@@ -402,6 +403,17 @@ function colByLabel(an, primary, c) { const lab = MP.basicNorm((primary.cols[c] 
 
 const needs = () => (S.res ? S.res.decisions.filter((d) => ['review', 'ambiguous', 'unmatched'].includes(d.status) && d.aliasKey) : []);
 const ready = () => !!(S.tree && S.mpSheets.length);
+/** Users that will be written: matched, and — when leaving out bad rows — with a valid phone, a role, and a phone
+ *  not already taken by an earlier row (the console rejects repeated phones; the first one wins). */
+function addableUsers() {
+  const seen = new Set();
+  return S.res.users.filter((u) => {
+    if (!u.code) return false;
+    if (!S.cfg.skipBadUsers) return true;
+    if (!u.phoneNorm.ok || !u.role) return false;
+    const k = phoneDigits(u.phoneNorm.value); if (seen.has(k)) return false; seen.add(k); return true;
+  });
+}
 const usedCodes = () => (S.res ? S.res.matched.map((m) => m.code).concat(S.res.users.map((u) => u.code)) : []);
 
 // ───────── shell ─────────
@@ -516,16 +528,24 @@ function resolveBoundary(text) {
   const L = boundaryList(); const T = S.tree;
   const hit = L.byValue.get(t.toLowerCase()); if (hit) return { code: hit };
   if (T.nodes.has(t)) return { code: t };
-  const segs = t.split(/\s*(?:›|>|\/|·|#)\s*/).filter(Boolean);
-  const last = segs[segs.length - 1]; const want = MP.canon(last); const ctx = segs.slice(0, -1).map((x) => MP.canon(x.replace(/\s*\([^)]*\)$/, '')));
-  const fits = (n) => ctx.every((c) => (n.dpath || n.path).slice(0, -1).concat(n.path.slice(0, -1)).some((p) => MP.canon(p) === c));
-  const pool = Array.from(T.nodes.values()).filter((n) => !n.synthetic && fits(n));
-  const same = pool.filter((n) => MP.canon(n.name) === want || MP.canon(n.path[n.path.length - 1]) === want);
-  if (same.length === 1) return { code: same[0].code };
-  if (same.length > 1) return { code: null, reason: `${same.length} places are called “${last}”, pick one from the list` };
-  const scored = pool.map((n) => ({ n, s: MP.similarity(last, n.name) })).sort((a, b) => b.s - a.s);
-  if (scored[0] && scored[0].s >= 0.9 && (!scored[1] || scored[0].s - scored[1].s >= 0.05)) return { code: scored[0].n.code, note: `“${last}” read as ${scored[0].n.name}` };
-  return { code: null, reason: scored[0] && scored[0].s >= 0.7 ? `boundary not found (closest: ${scored.slice(0, 2).map((x) => x.n.name).join(', ')})` : 'boundary not found in the template' };
+  // drop a trailing “(Level)” as shown in the list — but not real names such as “Ropolon (Koya)”
+  const lv = t.match(/\s*\(([^)]*)\)\s*$/); const t2 = lv && T.levelLabels.some((l) => MP.basicNorm(l) === MP.basicNorm(lv[1])) ? t.slice(0, lv.index) : t;
+  const segs = t2.split(/\s*(?:›|>|\/|·|#|,)\s*/).filter(Boolean);
+  // people write a place either parent-first ("Ward › Facility") or child-first like the list ("Facility · Ward")
+  const orders = segs.length > 1 ? [{ name: segs[segs.length - 1], ctx: segs.slice(0, -1) }, { name: segs[0], ctx: segs.slice(1) }] : [{ name: segs[0], ctx: [] }];
+  let best = null;
+  for (const o of orders) {
+    const want = MP.canon(o.name); const ctx = o.ctx.map((x) => MP.canon(x));
+    const fits = (n) => ctx.every((c) => (n.dpath || n.path).slice(0, -1).concat(n.path.slice(0, -1)).some((p) => MP.canon(p) === c));
+    const pool = Array.from(T.nodes.values()).filter((n) => !n.synthetic && fits(n));
+    const same = pool.filter((n) => MP.canon(n.name) === want || MP.canon(n.path[n.path.length - 1]) === want);
+    if (same.length === 1) return { code: same[0].code };
+    if (same.length > 1) { best = best || { code: null, reason: `${same.length} places are called “${o.name}”, pick one from the list` }; continue; }
+    const scored = pool.map((n) => ({ n, s: MP.similarity(o.name, n.name) })).sort((a, b) => b.s - a.s);
+    if (scored[0] && scored[0].s >= 0.9 && (!scored[1] || scored[0].s - scored[1].s >= 0.05)) return { code: scored[0].n.code, note: `“${o.name}” read as ${scored[0].n.name}` };
+    if (!best) best = { code: null, reason: scored[0] && scored[0].s >= 0.7 ? `boundary not found (closest: ${scored.slice(0, 2).map((x) => x.n.name).join(', ')})` : 'boundary not found in the template' };
+  }
+  return best;
 }
 function addRow(init) { const r = Object.assign({ id: ++S.add.seq, name: '', phone: '', roles: [], badRoles: [], btext: '', code: null, breason: '', note: '' }, init || {}); S.add.rows.push(r); return r; }
 function setBoundary(r, text) { const res = resolveBoundary(text); r.code = res.code; r.breason = res.reason || ''; r.note = res.note || ''; r.btext = r.code ? boundaryList().byCode.get(r.code) || text : text; }
@@ -591,6 +611,9 @@ function viewAdd() {
       <label class="field">Employment type${F.employmentOptions.length ? `<select id="aEmp">${F.employmentOptions.map((x) => opt(x, x, addEmp())).join('')}</select>` : `<input type="text" id="aEmp" value="${esc(addEmp())}">`}</label>
       ${activationField('aAct', S.add.activate, C.good.map((r) => r.code))}
     </div>
+    ${F.mandatoryBlank && F.mandatoryBlank.length ? `<div class="facts"><div class="fact"><span class="mark warn">!</span><div class="t">Mandatory targets are blank in this template
+      <div class="d">${F.mandatoryBlank.map((m) => `“${esc(m.label.replace(/\s*\(.*$/, ''))}” on ${plural(m.count, 'row')}`).join('; ')}. The console rejects the file until they are filled — use From microplan for real targets.</div>
+      <label class="check" style="margin-top:6px"><input type="checkbox" id="aTargets"${S.add.targets ? ' checked' : ''}> Fill them with demo numbers (test runs only)</label></div></div></div>` : ''}
     <div class="facts"><div class="fact"><span class="mark ${C.live.length > C.good.length ? 'warn' : 'ok'}">${C.live.length > C.good.length ? '!' : '✓'}</span><div class="t">${plural(C.good.length, 'person', 'people')} ready to add${C.live.length > C.good.length ? `<div class="d">${plural(C.live.length - C.good.length, 'row')} with a problem will be left out until fixed.</div>` : ''}</div></div></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button type="button" class="primary" id="aSave"${C.good.length ? '' : ' disabled'}>Download template with ${plural(C.good.length, 'new user')}</button></div>
     <div class="status" id="addStatus" role="status">${esc(S.add.msg)}</div>`;
@@ -633,9 +656,9 @@ async function addSave(btn) {
   try {
     const C = addChecks();
     const users = C.good.map((r) => ({ code: r.code, name: r.name.trim(), phone: r.phoneOut, roles: r.roles.filter(Boolean) }));
-    const log = await writeTemplate({ users, employmentType: addEmp(), activate: activation(S.add.activate, users.map((u) => u.code)) }, 'with_users');
+    const log = await writeTemplate({ users, employmentType: addEmp(), activate: activation(S.add.activate, users.map((u) => u.code)), demoTargets: !!S.add.targets }, 'with_users');
     S.add.msg = `Added ${plural(log.usersWritten, 'user')}${log.existingUsers ? ` after the ${fmt(log.existingUsers)} already there` : ''}.`
-      + (log.facilitiesActivated ? ` ${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '') + (C.live.length > C.good.length ? ` ${plural(C.live.length - C.good.length, 'row')} with problems left out.` : '') + mandatoryNote(log);
+      + (log.facilitiesActivated ? ` ${plural(log.facilitiesActivated, 'facility', 'facilities')} set to Active.` : '') + (log.demoTargets ? ` Filled ${plural(log.demoTargets, 'target cell')} with demo numbers.` : '') + (C.live.length > C.good.length ? ` ${plural(C.live.length - C.good.length, 'row')} with problems left out.` : '') + mandatoryNote(log);
   } catch (err) { console.error(err); S.add.msg = 'Could not write the template. ' + (err && err.message || err); }
   $('addStatus').textContent = S.add.msg; btn.disabled = false;
 }
@@ -679,7 +702,7 @@ function viewColumns() {
     fact(mappedLv.length >= 2 ? 'ok' : 'err', 'Boundary columns', mappedLv.length ? mappedLv.join(' › ') : 'None mapped'),
     !a ? '' : tk.length ? fact(tFilled.length === tk.length ? 'ok' : 'warn', 'Targets', tFilled.length ? tFilled.map((t) => `${esc(t.label)} ← ${esc((a.cols[S.cfg.targetMap[t.key]] || {}).label)}`).join('<br>') + (tFilled.length < tk.length ? `<br>${tk.length - tFilled.length} template column${tk.length - tFilled.length > 1 ? 's' : ''} left blank` : '') : 'No target columns matched')
       : fact('ok', 'Targets', 'This template has no target sheet'),
-    ua ? fact(unmappedRoles ? 'warn' : 'ok', `Users from <b>${esc(S.cfg.userSheet)}</b>`, Object.entries(S.cfg.roleMap).map(([d, r]) => `${esc(d)} → ${r ? esc(r) : '<i>no role chosen</i>'}`).join(' · ') || 'No designation column')
+    ua ? fact(unmappedRoles ? 'warn' : 'ok', `Users from <b>${esc(S.cfg.userSheet)}</b>`, roleSummary() || 'No designation column')
        : fact('ok', 'Users', 'No user list in this microplan'),
     S.facts.existingUsers.length ? fact('ok', `${plural(S.facts.existingUsers.length, 'user')} already in the template`, 'New users are added after them; existing rows are not changed') : '',
   ].join('');
@@ -687,6 +710,12 @@ function viewColumns() {
     <div class="facts">${facts}</div>
     <details class="edit"${S._editOpen ? ' open' : ''} id="editMap"><summary>Edit columns</summary>${mappingForm(a || ua, ua, !a)}</details>
     ${nav(1, 'Match names', mappedLv.length >= 2)}`;
+}
+/** Designations with their roles; one-off values (often a name typed into the wrong column) are counted, not listed. */
+function roleSummary() {
+  const cnt = S.cfg.roleCount || {}; const all = Object.entries(S.cfg.roleMap);
+  const main = all.filter(([d]) => (cnt[d] || 0) > 1 || all.length <= 12), rest = all.filter((e) => !main.includes(e));
+  return main.map(([d, r]) => `${esc(d)} → ${r ? esc(r) : '<i>no role chosen</i>'}`).join(' · ') + (rest.length ? ` · and ${plural(rest.length, 'one-off value')} (${rest.filter(([, r]) => !r).length} without a role, listed on the export step)` : '');
 }
 function mappingForm(a, ua, usersOnly) {
   const lv = (cur) => `<option value="">Ignore</option>` + S.tree.levelLabels.map((l, i) => opt(i, l, cur)).join('');
@@ -709,10 +738,10 @@ function mappingForm(a, ua, usersOnly) {
     h += `<div class="row"><label for="pName">Name column</label><select id="pName" data-person="name">${cols(S.cfg.person.name)}</select></div>
       <div class="row"><label for="pPhone">Phone column</label><select id="pPhone" data-person="phone">${cols(S.cfg.person.phone)}</select></div>
       <div class="row"><label for="pRole">Designation column</label><select id="pRole" data-person="role">${cols(S.cfg.person.role)}</select></div>`
-      + Object.entries(S.cfg.roleMap).map(([d, r], i) => `<div class="row"><label for="role-${i}">“${esc(d)}” becomes</label>${S.facts.roleOptions.length ? `<select id="role-${i}" data-role="${esc(d)}"><option value="">Choose a role</option>${S.facts.roleOptions.map((x) => opt(x, x, r)).join('')}</select>` : `<input type="text" id="role-${i}" data-role="${esc(d)}" value="${esc(r)}">`}</div>`).join('')
+      + Object.entries(S.cfg.roleMap).slice(0, 30).map(([d, r], i) => `<div class="row"><label for="role-${i}">“${esc(d)}” becomes</label>${S.facts.roleOptions.length ? `<select id="role-${i}" data-role="${esc(d)}"><option value="">Choose a role</option>${S.facts.roleOptions.map((x) => opt(x, x, r)).join('')}</select>` : `<input type="text" id="role-${i}" data-role="${esc(d)}" value="${esc(r)}">`}</div>`).join('')
       + `<div class="row"><label for="selPhone">Phone number check</label><select id="selPhone">${phoneOptions(S.cfg.phoneFmt)}</select></div>
       <div class="row"><label for="selEmp">Employment type</label>${S.facts.employmentOptions.length ? `<select id="selEmp">${S.facts.employmentOptions.map((x) => opt(x, x, S.cfg.empType)).join('')}</select>` : `<input type="text" id="selEmp" value="${esc(S.cfg.empType)}">`}</div>
-      <label class="check"><input type="checkbox" id="skipBad"${S.cfg.skipBadUsers ? ' checked' : ''}> Leave out users with a bad phone number or an unknown facility</label>`;
+      <label class="check"><input type="checkbox" id="skipBad"${S.cfg.skipBadUsers ? ' checked' : ''}> Leave out users with a bad or repeated phone number, no role, or an unknown facility</label>`;
   }
   return h + '</div>';
 }
@@ -807,7 +836,7 @@ function viewExport() {
   const leaf = S.tree.depth; let rows = 0, filled = 0;
   if (tmap.length) for (const n of S.tree.nodes.values()) { if (n.level !== leaf || n.synthetic) continue; rows++; if (MP.valueFor(S.tree, R.agg, n.code, Number(tmap[0][1]), S.cfg.splitMode).v != null) filled++; }
   const unresolved = R.matched.filter((m) => !m.code).length;
-  const willAdd = R.users.filter((u) => u.code && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).length;
+  const willAdd = addableUsers().length;
   const groups = new Map();
   for (const i of R.issues) { const rule = PHONE_RULES.includes(i.rule) ? 'Phone numbers' : i.rule; if (!groups.has(rule)) groups.set(rule, { rule, sev: i.severity, list: [] }); const g = groups.get(rule); g.list.push(i); if (i.severity === 'error') g.sev = 'error'; }
   const all = Array.from(groups.values()).sort((a, b) => (a.sev === b.sev ? a.rule.localeCompare(b.rule) : a.sev === 'error' ? -1 : 1));
@@ -851,6 +880,7 @@ function shortMsg(i) {
   if (i.rule === 'Phone') return i.message.split(' — ').pop();
   if (i.rule === 'Duplicate phone') return 'phone used twice';
   if (i.rule === 'Phone already in template') return 'phone already in the template';
+  if (i.rule === 'No role') return 'no role';
   if (i.rule === 'User boundary') return 'facility not found';
   if (i.rule === 'Blank name') return 'no name';
   if (i.rule === 'Bad number') return i.message;
@@ -863,6 +893,7 @@ const HINT = {
   'Phone numbers': 'Correct the number in the row, or remove the person.',
   'User boundary': 'Fix the facility name so it matches the boundary list, or resolve it in Resolve names.',
   'Blank name': 'Type the person\'s name, or remove the row.',
+  'No role': 'Correct the designation (e.g. CDD, OIC), choose a role for it under Check columns, or remove the person. People without a role are left out.',
   'Duplicate rows': 'Two rows point at the same boundary and were added together. Fix the name in one, or remove it.',
   'Targets at two levels': 'Clear the targets on one of the two rows so they are counted once.',
   'Bad number': 'Correct the value.',
@@ -1088,6 +1119,7 @@ view.addEventListener('change', async (e) => {
     else if (t.id === 'aPhone') S.cfg.phoneFmt = t.value;
     else if (t.id === 'aEmp') S.add.empType = t.value;
     else if (t.id === 'aAct') S.add.activate = t.value;
+    else if (t.id === 'aTargets') S.add.targets = t.checked;
     else if (t.id === 'fileAddList' && t.files[0]) {
       try { const sheets = sheetsFromXLSX(await t.files[0].arrayBuffer(), false).filter((x) => !x.hidden && x.rows.length);
         const sh = sheets.sort((a, b) => b.rows.length - a.rows.length)[0]; const n = sh ? importRows(sh.rows, sh.name) : 0; toast(n ? `Added ${plural(n, 'row')} from ${t.files[0].name}` : 'No people found in that file'); }
@@ -1141,7 +1173,7 @@ async function fillAndSave(btn) {
   btn.disabled = true; $('expStatus').textContent = 'Writing the template…'; await tick();
   try {
     const R = S.res;
-    const users = R.users.filter((u) => u.code && (!S.cfg.skipBadUsers || u.phoneNorm.ok)).map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
+    const users = addableUsers().map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
     const targetMap = Object.fromEntries(Object.entries(S.cfg.targetMap).filter(([, v]) => v !== '' && v != null));
     const log = await writeTemplate({ agg: R.agg, targetMap, splitMode: S.cfg.splitMode, users, employmentType: S.cfg.empType, activate: activation(S.activate, usedCodes()) }, 'filled');
     S.exportMsg = [R.matched.length ? `Wrote ${plural(log.targetsWritten, 'target cell')} and ${plural(log.usersWritten, 'user')}.` : `Added ${plural(log.usersWritten, 'user')}.`,

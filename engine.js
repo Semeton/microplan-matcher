@@ -667,10 +667,12 @@
           add('warn', 'Targets on one child per parent', `In ${single} of ${byParent.size} cases only one ${lvl} under a parent carries values. This usually means parent totals were written on the first ${lvl} row. Check with the programme before splitting or uploading — the other ${lvl} rows will be blank.`);
         }
       }
+      const decimals = { n: 0, eg: null };
       for (const m of matched) {
         if (!m.values) continue;
-        for (const c of valueCols) { const v = m.values[c]; if (v !== undefined && v !== null && (v < 0 || !Number.isInteger(v))) add(v < 0 ? 'error' : 'warn', 'Bad number', (valueLabels[c] || 'col ' + c) + ' = ' + v + (v < 0 ? ' (negative)' : ' (not a whole number — will be rounded)'), m.sheet + '!' + m.row); }
+        for (const c of valueCols) { const v = m.values[c]; if (v === undefined || v === null) continue; if (v < 0) add('error', 'Bad number', (valueLabels[c] || 'col ' + c) + ' = ' + v + ' (negative)', m.sheet + '!' + m.row); else if (!Number.isInteger(v)) { decimals.n++; if (!decimals.eg) decimals.eg = v; } }
       }
+      if (decimals.n) add('warn', 'Decimal targets', `${decimals.n} target values are decimals (e.g. ${Math.round(decimals.eg * 1000) / 1000}); they are rounded to whole numbers when written`);
     }
 
     // users

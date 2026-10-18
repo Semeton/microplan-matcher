@@ -91,7 +91,7 @@
     const want =
       /\boic\b|in ?charge|hf ?w|facility (worker|staff)|health facility/.test(d) && !/supervisor/.test(d) ? ['health facility worker', 'health facility', 'facility supervisor', 'facility'] :
       /\bcdd\b|distributor|dispenser|mobiliser|vaccinator/.test(d) ? ['distributor', 'dispenser', 'cdd'] :
-      /registrar/.test(d) ? ['registrar', 'distributor'] :
+      /registrar|recorder|enumerator|scribe|data (entry|clerk)/.test(d) ? ['registrar', 'distributor'] :
       /logistic|store|warehouse|lmcu/.test(d) ? ['warehouse', 'logistic', 'store'] :
       /national/.test(d) ? ['national supervisor', 'supervisor'] :
       /\bstate\b|provinc/.test(d) ? ['provincial supervisor', 'state supervisor', 'national supervisor'] :
@@ -376,6 +376,7 @@
         for (const [k, col] of Object.entries(hm)) if (/TARGET/i.test(k) && !facts.targetKeys.find((t) => t.key === k)) { const label = s(ws.getRow(2).getCell(col).value) || k; facts.targetKeys.push({ key: k, label, sheet: ws.name, mandatory: isMandatory(label) }); }
       }
     }
+    facts.mandatoryBlank = mandatoryBlanks(wb).filter((m) => m.sheet !== facts.userSheet);
     return facts;
   }
 
