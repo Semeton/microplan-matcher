@@ -105,6 +105,7 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
   // add users to the empty example template: one typed, three pasted (one bad boundary, one repeated phone)
   click('[data-mode="users"]'); await wait(100);
   console.log('[users]', txt(d.querySelector('.file .meta')), '| row cards:', d.querySelectorAll('.rowcard').length);
+  await until(() => d.querySelector('[data-af$="|name"]'));
   const uid1 = d.querySelector('[data-af$="|name"]').dataset.af.split('|')[0];
   fire(rowF(uid1, 'name'), 'Typed Person'); fire(rowF(uid1, 'phone'), '08031230001');
   fire(rowF(uid1, 'b'), 'Garko PHC'); fire(d.querySelector(`[data-arole="${uid1}|0"]`), 'HEALTH_FACILITY_WORKER'); await wait(50);
@@ -124,6 +125,7 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
   // reopen the filled template and add more: existing users listed, their phones blocked
   await setFile('#fileTpl', 'Example_with_users.xlsx', withUsers);
   console.log('[users again]', txt(d.querySelector('.file .meta')), '| existing box:', txt(d.querySelector('#exBox summary')));
+  await until(() => d.querySelector('[data-af$="|name"]'));
   const uid2 = d.querySelector('[data-af$="|name"]').dataset.af.split('|')[0];
   fire(rowF(uid2, 'name'), 'Second Batch'); fire(rowF(uid2, 'phone'), '08031230001'); fire(rowF(uid2, 'b'), 'Bogo Waziri HC'); fire(d.querySelector(`[data-arole="${uid2}|0"]`), 'DISTRIBUTOR'); await wait(50);
   console.log('   repeated phone:', txt(d.querySelector('.rowcard .rc-problem')));

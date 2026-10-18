@@ -141,8 +141,22 @@ td select { min-width: 200px; }
 .demo-table input[type="number"] { width: 64px; font: inherit; font-size: 0.88rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .demo-table td.role { font-weight: 500; }
 .demo-table tr.off td:not(:first-child) { opacity: 0.4; }
+@media (max-width: 560px) {
+  .demo-table thead { display: none; }
+  .demo-table tr { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 6px 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .demo-table td { border: 0; padding: 0; }
+  .demo-table td.role { grid-column: 1 / -1; }
+  .demo-table td select { min-width: 0; width: 100%; }
+  .demo-table input[type="number"] { width: 100%; }
+}
 .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .settings .field { display: grid; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+.actionbar { position: sticky; bottom: 0; z-index: 2; background: var(--surface); border-top: 1px solid var(--line); margin: 0 -28px -28px; padding: 14px 28px calc(14px + env(safe-area-inset-bottom, 0px)); border-radius: 0 0 10px 10px; display: grid; gap: 6px; }
+.actionbar .row-btns { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.actionbar .state { font-size: 0.84rem; color: var(--muted); }
+.actionbar .state.err { color: var(--err); }
+@media (max-width: 560px) { .actionbar { margin: 0 -16px -20px; padding-inline: 16px; } }
+.role-code { display: block; font-family: var(--f-mono); font-size: 0.72rem; color: var(--faint); font-weight: 400; }
 .status { font-size: 0.86rem; color: var(--muted); min-height: 1.4em; }
 .status:empty { display: none; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 7px; font-size: 0.88rem; max-width: calc(100% - 32px); z-index: 10; }
@@ -286,12 +300,14 @@ function areaSet(codes) {
   return S.facts.facilities.filter((f) => { if (up.has(f.code)) return true; let n = S.tree.nodes.get(f.code); while (n) { if (used.has(n.code)) return true; n = n.parent ? S.tree.nodes.get(n.parent) : null; } return false; }).map((f) => f.code);
 }
 function activation(mode, codes) { return mode === 'all' ? 'all' : mode === 'used' ? new Set(areaSet(codes)) : null; }
-function activationField(id, mode, codes, label) {
+function activationField(id, mode, codes, label, areaLabel) {
   const F = S.facts; if (!F.facilityCount) return '';
   const inArea = new Set(areaSet(codes)); const nArea = F.facilities.filter((f) => inArea.has(f.code)).length;
-  return `<label class="field">${label || 'Facilities to mark Active'}<select id="${id}">${opt('used', `In this area (${fmt(nArea)} of ${fmt(F.facilityCount)})`, mode)}${opt('all', `All ${fmt(F.facilityCount)}`, mode)}${opt('leave', `Leave as they are (${fmt(F.facilityActive)} active)`, mode)}</select></label>`;
+  return `<label class="field">${label || 'Facilities to mark Active'}<select id="${id}">${opt('used', `${areaLabel || 'Where these users work'} (${fmt(nArea)} of ${fmt(F.facilityCount)})`, mode)}${opt('all', `All ${fmt(F.facilityCount)}`, mode)}${opt('leave', `Leave as they are (${fmt(F.facilityActive)} active)`, mode)}</select></label>`;
 }
 /** Same number with or without its leading 0 or country code → one key. */
+/** HEALTH_FACILITY_WORKER → “Health facility worker” (the code stays visible where it matters). */
+const roleName = (r) => (/^[A-Z0-9_]+$/.test(r || '') ? r.charAt(0) + r.slice(1).toLowerCase().replace(/_/g, ' ') : r || '');
 const phoneDigits = (v) => { const raw = String(v == null ? '' : v).replace(/\.0+$/, ''); if (!raw.replace(/\D/g, '')) return ''; return MP.normPhone(raw, S.cfg.phoneFmt).value.replace(/^0+/, ''); };
 function phoneOptions(cur) {
   return opt('ng', 'Nigeria (10 digits)', cur) + opt('sl', 'Sierra Leone (9 digits)', cur) + opt('raw', 'Any (7–15 digits)', cur);
@@ -449,7 +465,7 @@ function viewDemo() {
   const slots = S.facts.roleSlots || 5, nTicked = D.rows.filter((r) => r.include).length;
   const phoneBad = demoPhoneProblem(users);
   h += `<div class="tbl"><table class="demo-table"><thead><tr><th>Role</th><th>Placed at</th><th>How many</th></tr></thead><tbody>
-    ${D.rows.map((r, i) => `<tr class="${r.include ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" data-dinc="${i}" ${r.include ? 'checked' : ''}> ${esc(r.role)}</label></td>
+    ${D.rows.map((r, i) => `<tr class="${r.include ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" data-dinc="${i}" ${r.include ? 'checked' : ''}> <span>${esc(roleName(r.role))}${roleName(r.role) !== r.role ? `<span class="role-code">${esc(r.role)}</span>` : ''}</span></label></td>
       <td><select data-dlvl="${i}" aria-label="Level for ${esc(r.role)}">${lvlOpts(r.level)}</select></td>
       <td><input type="number" min="0" max="50" data-dcnt="${i}" value="${r.count}" aria-label="How many ${esc(r.role)} users"></td></tr>`).join('')}
     <tr class="${D.allRoles.on ? '' : 'off'}"><td class="role"><label class="check" style="font-weight:500"><input type="checkbox" id="dAllOn" ${D.allRoles.on ? 'checked' : ''}> ${nTicked > slots ? `Users holding several ticked roles (up to ${slots} each, ${Math.ceil(nTicked / slots)} per place)` : 'One user with all ticked roles'}</label></td>
@@ -462,20 +478,21 @@ function viewDemo() {
       <label class="field">First phone number<input type="text" id="dPhone" value="${esc(D.phoneStart)}" inputmode="numeric"${phoneBad ? ' aria-invalid="true"' : ''}></label>
       <label class="field">Phone number check<select id="dPhoneFmt">${phoneOptions(S.cfg.phoneFmt)}</select></label>
       <label class="field">Employment type${S.facts.employmentOptions.length ? `<select id="dEmp">${S.facts.employmentOptions.map((x) => opt(x, x, D.empType)).join('')}</select>` : `<input type="text" id="dEmp" value="${esc(D.empType)}">`}</label>
-      ${activationField('dAct', D.activate, users.map((u) => u.code))}
+      ${activationField('dAct', D.activate, users.map((u) => u.code), null, 'Where demo users are')}
     </div>
     ${phoneBad ? `<p class="small" style="color:var(--err)">Phone numbers ${esc(phoneBad)}. Change the first phone number.</p>` : ''}
     ${S.facts.targetKeys.length ? `<label class="check"><input type="checkbox" id="dTargets"${D.targets ? ' checked' : ''}> Fill ${S.facts.targetKeys.some((t) => t.mandatory) ? 'mandatory targets' : 'targets'} with demo numbers (the console rejects blank ${S.facts.targetKeys.some((t) => t.mandatory) ? 'mandatory ' : ''}targets)</label>` : ''}
     <p class="muted small">Phones count up from the first number and are written as numbers. Use a range your team controls if the app sends OTPs or SMS.</p>
     <div class="facts">
       <div class="fact"><span class="mark ok">✓</span><div class="t">${plural(users.length, 'user')} across ${plural(nB, 'boundary', 'boundaries')}
-        <div class="d">${users.slice(0, 6).map((u) => `${esc(u.name)} — ${u.roles.length > 1 ? plural(u.roles.length, 'role') : esc(u.roles[0])} — ${esc(u.label)}`).join('<br>')}${users.length > 6 ? `<br>…and ${fmt(users.length - 6)} more` : ''}</div></div></div>
+        <div class="d">${users.slice(0, 6).map((u) => `${esc(u.name)} — ${u.roles.length > 1 ? plural(u.roles.length, 'role') : esc(roleName(u.roles[0]))} — ${esc(u.label)}`).join('<br>')}${users.length > 6 ? `<br>…and ${fmt(users.length - 6)} more` : ''}</div></div></div>
     </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button type="button" class="primary" id="dFill"${users.length && !phoneBad ? '' : ' disabled'}>Download template with demo users</button>
-      <button type="button" class="quiet" id="dList"${users.length ? '' : ' disabled'}>Download user list (.csv)</button>
-    </div>
-    <div class="status" id="demoStatus" role="status">${esc(S.demoMsg)}</div>`;
+    <div class="actionbar">
+      <div class="state${phoneBad ? ' err' : ''}">${phoneBad ? 'Change the first phone number to continue' : users.length ? `${plural(users.length, 'demo user')} across ${plural(nB, 'boundary', 'boundaries')}` : 'Tick at least one role'}</div>
+      <div class="row-btns"><button type="button" class="primary" id="dFill"${users.length && !phoneBad ? '' : ' disabled'}>Download template with demo users</button>
+      <button type="button" class="quiet" id="dList"${users.length ? '' : ' disabled'}>Download user list (.csv)</button></div>
+      <div class="status" id="demoStatus" role="status">${esc(S.demoMsg)}</div>
+    </div>`;
   return h;
 }
 async function demoFill(btn) {
@@ -581,7 +598,7 @@ function addChecks() {
 }
 function viewAdd() {
   const F = S.facts;
-  const tplMeta = S.tree ? `${plural(F.existingUsers.length, 'user')} already · ${plural(F.roleOptions.length, 'role')} · ${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')}` : '';
+  const tplMeta = S.tree ? `${F.existingUsers.length ? plural(F.existingUsers.length, 'user') + ' already' : 'No users yet'} · ${plural(F.roleOptions.length, 'role')} · ${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')}` : '';
   let h = `<div class="intro"><h2>Add users</h2><p class="muted small">Use an empty template or one that already has users. New people go after the existing rows; nothing already in the template changes.</p></div>
     <div class="files">${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}</div>
     <div class="status" role="status">${esc(S.busy)}</div>`;
@@ -591,7 +608,7 @@ function viewAdd() {
   const C = addChecks(); const L = boundaryList(); const slots = F.roleSlots || 1; const ex = F.existingUsers;
   if (ex.length) h += `<details class="edit"${S.open.__ex ? ' open' : ''} id="exBox"><summary>${plural(ex.length, 'user')} already in the template</summary>
     <div class="tbl"><table><thead><tr><th>Row</th><th>Name</th><th>Phone</th><th>Roles</th><th>Boundary</th></tr></thead><tbody>${ex.slice(0, 200).map((u) => `<tr><td class="mono">${u.row}</td><td>${esc(u.name)}</td><td class="mono">${esc(u.phone)}</td><td>${esc(u.roles.join(', '))}</td><td>${esc(S.tree.nodes.has(u.code) ? MP.label(S.tree, u.code) || S.tree.nodes.get(u.code).name : u.code)}</td></tr>`).join('')}</tbody></table></div>${ex.length > 200 ? `<p class="muted small">…and ${fmt(ex.length - 200)} more.</p>` : ''}</details>`;
-  const roleSel = (r, k) => (F.roleOptions.length ? `<select data-arole="${r.id}|${k}" aria-label="Role ${k + 1} for new user ${r.id}"><option value="">${k ? 'No more roles' : 'Choose a role'}</option>${F.roleOptions.map((o) => opt(o, o, r.roles[k] || '')).join('')}</select>`
+  const roleSel = (r, k) => (F.roleOptions.length ? `<select data-arole="${r.id}|${k}" aria-label="Role ${k + 1} for new user ${r.id}"><option value="">${k ? 'No more roles' : 'Choose a role'}</option>${F.roleOptions.map((o) => opt(o, roleName(o), r.roles[k] || '')).join('')}</select>`
     : `<input type="text" data-arole="${r.id}|${k}" value="${esc(r.roles[k] || '')}" placeholder="Role" aria-label="Role ${k + 1}">`);
   h += `<div class="group-title">New users</div><div class="rowcards">${S.add.rows.map((r, i) => { const pr = C.problems.get(r.id) || []; const nSel = Math.min(slots, r.roles.filter(Boolean).length + 1);
     return `<div class="rowcard"><div class="rc-head"><span class="rc-ref">New ${i + 1}</span><span class="rc-problem">${esc(pr.join(' · '))}</span>${!pr.length && r.note ? `<span class="small muted">${esc(r.note)}</span>` : ''}<button type="button" class="quiet" data-arm="${r.id}">Remove</button></div>
@@ -614,9 +631,11 @@ function viewAdd() {
     ${F.mandatoryBlank && F.mandatoryBlank.length ? `<div class="facts"><div class="fact"><span class="mark warn">!</span><div class="t">Mandatory targets are blank in this template
       <div class="d">${F.mandatoryBlank.map((m) => `“${esc(m.label.replace(/\s*\(.*$/, ''))}” on ${plural(m.count, 'row')}`).join('; ')}. The console rejects the file until they are filled — use From microplan for real targets.</div>
       <label class="check" style="margin-top:6px"><input type="checkbox" id="aTargets"${S.add.targets ? ' checked' : ''}> Fill them with demo numbers (test runs only)</label></div></div></div>` : ''}
-    <div class="facts"><div class="fact"><span class="mark ${C.live.length > C.good.length ? 'warn' : 'ok'}">${C.live.length > C.good.length ? '!' : '✓'}</span><div class="t">${plural(C.good.length, 'person', 'people')} ready to add${C.live.length > C.good.length ? `<div class="d">${plural(C.live.length - C.good.length, 'row')} with a problem will be left out until fixed.</div>` : ''}</div></div></div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button type="button" class="primary" id="aSave"${C.good.length ? '' : ' disabled'}>Download template with ${plural(C.good.length, 'new user')}</button></div>
-    <div class="status" id="addStatus" role="status">${esc(S.add.msg)}</div>`;
+    <div class="actionbar">
+      <div class="state${C.live.length > C.good.length ? ' err' : ''}">${!C.live.length ? 'Type a person above, paste rows from Excel, or upload a list.' : `${plural(C.good.length, 'person', 'people')} ready to add` + (C.live.length > C.good.length ? ` · ${plural(C.live.length - C.good.length, 'row')} with a problem left out until fixed` : '')}</div>
+      <div class="row-btns"><button type="button" class="primary" id="aSave"${C.good.length ? '' : ' disabled'}>${C.good.length ? `Download template with ${plural(C.good.length, 'new user')}` : 'Download template'}</button></div>
+      <div class="status" id="addStatus" role="status">${esc(S.add.msg)}</div>
+    </div>`;
   return h;
 }
 /** Rows from a paste or an uploaded sheet. With recognisable headers the engine matches boundaries level by level;
@@ -673,10 +692,12 @@ function fileBox(id, accept, loaded, name, meta, prompt, ic) {
   </label>`;
 }
 function viewFiles() {
-  const tplMeta = S.tree ? `${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')} · ${S.tree.levelLabels.length} levels` : '';
+  const tplMeta = S.tree ? `${plural(S.tree.nodes.size - S.tree.synthetic, 'boundary', 'boundaries')} · ${S.tree.levelLabels.length} levels` + (S.facts.existingUsers.length ? ` · ${plural(S.facts.existingUsers.length, 'user')} already` : '') : '';
   const a = S.cfg.sheet && A(S.cfg.sheet);
   const ua0 = S.cfg.userSheet && A(S.cfg.userSheet);
-  const mpMeta = S.mpSheets.length ? (a ? (S.cfg.extra.length ? `${plural(rowsAll(), 'row')} on ${S.cfg.extra.length + 1} sheets with the same layout` : `${plural(a.nRows, 'row')} on “${esc(S.cfg.sheet)}”`) : ua0 ? `${plural(ua0.nRows, 'person', 'people')} on “${esc(S.cfg.userSheet)}”, no targets` : 'No sheet with State / LGA / Ward columns found') : '';
+  const withUsers = a && ua0 ? ` · ${plural(ua0.nRows, 'person', 'people')} on “${esc(S.cfg.userSheet)}”` : '';
+  const mpMeta = !S.mpSheets.length ? '' : a ? (S.cfg.extra.length ? `${plural(rowsAll(), 'row')} on ${S.cfg.extra.length + 1} sheets with the same layout` : `${plural(a.nRows, 'row')} on “${esc(S.cfg.sheet)}”`) + withUsers
+    : ua0 ? `${plural(ua0.nRows, 'person', 'people')} on “${esc(S.cfg.userSheet)}”, no targets` : 'No sheet with State / LGA / Ward columns found';
   return `<div class="intro"><h2>Add the two files</h2><p class="muted small">The template comes from the console for this campaign. It can already hold users; new ones are added after them. The microplan can be a v4.1 microplan, a Master Data sheet, or just a user list.</p></div>
     <div class="files">
       ${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}
@@ -702,7 +723,7 @@ function viewColumns() {
     fact(mappedLv.length >= 2 ? 'ok' : 'err', 'Boundary columns', mappedLv.length ? mappedLv.join(' › ') : 'None mapped'),
     !a ? '' : tk.length ? fact(tFilled.length === tk.length ? 'ok' : 'warn', 'Targets', tFilled.length ? tFilled.map((t) => `${esc(t.label)} ← ${esc((a.cols[S.cfg.targetMap[t.key]] || {}).label)}`).join('<br>') + (tFilled.length < tk.length ? `<br>${tk.length - tFilled.length} template column${tk.length - tFilled.length > 1 ? 's' : ''} left blank` : '') : 'No target columns matched')
       : fact('ok', 'Targets', 'This template has no target sheet'),
-    ua ? fact(unmappedRoles ? 'warn' : 'ok', `Users from <b>${esc(S.cfg.userSheet)}</b>`, roleSummary() || 'No designation column')
+    ua ? fact(unmappedRoles ? 'warn' : 'ok', `${plural(ua.nRows, 'person', 'people')} from <b>${esc(S.cfg.userSheet)}</b>`, roleSummary() || 'No designation column')
        : fact('ok', 'Users', 'No user list in this microplan'),
     S.facts.existingUsers.length ? fact('ok', `${plural(S.facts.existingUsers.length, 'user')} already in the template`, 'New users are added after them; existing rows are not changed') : '',
   ].join('');
@@ -738,7 +759,7 @@ function mappingForm(a, ua, usersOnly) {
     h += `<div class="row"><label for="pName">Name column</label><select id="pName" data-person="name">${cols(S.cfg.person.name)}</select></div>
       <div class="row"><label for="pPhone">Phone column</label><select id="pPhone" data-person="phone">${cols(S.cfg.person.phone)}</select></div>
       <div class="row"><label for="pRole">Designation column</label><select id="pRole" data-person="role">${cols(S.cfg.person.role)}</select></div>`
-      + Object.entries(S.cfg.roleMap).slice(0, 30).map(([d, r], i) => `<div class="row"><label for="role-${i}">“${esc(d)}” becomes</label>${S.facts.roleOptions.length ? `<select id="role-${i}" data-role="${esc(d)}"><option value="">Choose a role</option>${S.facts.roleOptions.map((x) => opt(x, x, r)).join('')}</select>` : `<input type="text" id="role-${i}" data-role="${esc(d)}" value="${esc(r)}">`}</div>`).join('')
+      + Object.entries(S.cfg.roleMap).slice(0, 30).map(([d, r], i) => `<div class="row"><label for="role-${i}">“${esc(d)}” becomes</label>${S.facts.roleOptions.length ? `<select id="role-${i}" data-role="${esc(d)}"><option value="">Choose a role</option>${S.facts.roleOptions.map((x) => opt(x, roleName(x), r)).join('')}</select>` : `<input type="text" id="role-${i}" data-role="${esc(d)}" value="${esc(r)}">`}</div>`).join('')
       + `<div class="row"><label for="selPhone">Phone number check</label><select id="selPhone">${phoneOptions(S.cfg.phoneFmt)}</select></div>
       <div class="row"><label for="selEmp">Employment type</label>${S.facts.employmentOptions.length ? `<select id="selEmp">${S.facts.employmentOptions.map((x) => opt(x, x, S.cfg.empType)).join('')}</select>` : `<input type="text" id="selEmp" value="${esc(S.cfg.empType)}">`}</div>
       <label class="check"><input type="checkbox" id="skipBad"${S.cfg.skipBadUsers ? ' checked' : ''}> Leave out users with a bad or repeated phone number, no role, or an unknown facility</label>`;
@@ -772,7 +793,7 @@ function viewNames() {
       </div></div>`).join('')}</div></details>`;
   }
   h += `<div class="nav"><button type="button" class="quiet" data-nav="2">← Back</button><button type="button" class="primary" data-nav="4">Continue</button></div>
-    <p class="small muted" style="display:flex;gap:4px 10px;flex-wrap:wrap;align-items:center">${plural(Object.keys(S.aliases).length, 'decision')} saved in this browser${S.example ? ' (not kept for the example)' : ''}.
+    <p class="small muted" style="display:flex;gap:4px 10px;flex-wrap:wrap;align-items:center">${plural(Object.keys(S.aliases).length, 'name choice')} remembered in this browser for the next cycle${S.example ? ' (not kept for the example)' : ''}.
       <button type="button" class="quiet" id="expAlias">Export</button>
       <label class="quiet" style="position:relative;color:var(--accent);cursor:pointer;padding:0 6px">Import<input type="file" id="impAlias" accept=".json" style="position:absolute;inset:0;opacity:0;cursor:pointer" aria-label="Import decisions"></label></p>`;
   S._q = q.slice(0, 25); S._auto = auto.slice(0, 300);
@@ -850,7 +871,7 @@ function viewExport() {
   ].filter(Boolean);
   // row → messages, for the status column in every grid
   S._rowMsgs = new Map();
-  for (const i of R.issues) for (const ref of [i.ref].concat(i.refs || []).filter(Boolean)) { if (!S._rowMsgs.has(ref)) S._rowMsgs.set(ref, []); S._rowMsgs.get(ref).push(shortMsg(i)); }
+  for (const i of R.issues) { const refs = Array.from(new Set([i.ref].concat(i.refs || []).filter(Boolean))); for (const ref of refs) { if (!S._rowMsgs.has(ref)) S._rowMsgs.set(ref, []); S._rowMsgs.get(ref).push(i.rule === 'Duplicate phone' && refs.length > 1 ? 'same phone as ' + refs.filter((r) => r !== ref).join(', ') : shortMsg(i)); } }
   const lifted = S.cfg.liftSingle ? `<div class="fact"><span class="mark ok">✓</span><div class="t">Each ${esc(S.tree.levelLabels[leaf - 1] || 'parent')} total is spread evenly across its ${esc(S.tree.levelLabels[leaf])} rows
     <div class="d">${plural(R.agg.lifted, 'total')} spread. <button type="button" class="quiet" data-act="unspread">Undo</button></div></div></div>` : '';
   const E = S.edits;
@@ -867,14 +888,14 @@ function viewExport() {
     ${mandBox ? `<div class="facts">${mandBox}</div>` : ''}
     ${active.length || lifted || editsBox ? `<div class="facts">${editsBox}${lifted}${active.map(issueGroup).join('')}</div>` : ''}
     ${acked.length ? `<details class="edit"><summary>${plural(acked.length, 'check')} marked as OK</summary><div class="facts">${acked.map((g) => `<div class="fact"><span class="mark ok">✓</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span><div class="d"><button type="button" class="quiet" data-unack="${esc(g.rule)}">Undo</button></div></div></div>`).join('')}</div></details>` : ''}
-    ${S.facts.facilityCount ? `<div class="settings">${activationField('selAct', S.activate, usedCodes())}</div>` : ''}
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button type="button" class="primary" id="btnFill">Download filled template</button>
-      <button type="button" class="quiet" id="btnReport">Download report</button>
-    </div>
-    <div class="status" id="expStatus" role="status">${esc(S.exportMsg)}</div>
+    ${S.facts.facilityCount ? `<div class="settings">${activationField('selAct', S.activate, usedCodes(), 'Facilities to mark Active', 'In the microplan’s area')}</div>` : ''}
     <p class="muted small">Edits change this run and the corrected microplan, never your original file. Only target cells, new user rows and facility status are written to the template; hidden helper columns and dropdowns stay as the console made them.</p>
-    ${nav(3)}`;
+    ${nav(3)}
+    <div class="actionbar">
+      <div class="state${nErr ? ' err' : ''}">${nErr ? `${plural(nErr, 'problem')} left — you can still download, but the console may reject those rows` : nWarn ? `Ready · ${plural(nWarn, 'thing')} to check` : 'Ready to upload'}</div>
+      <div class="row-btns"><button type="button" class="primary" id="btnFill">Download filled template</button><button type="button" class="quiet" id="btnReport">Download report</button></div>
+      <div class="status" id="expStatus" role="status">${esc(S.exportMsg)}</div>
+    </div>`;
 }
 function shortMsg(i) {
   if (i.rule === 'Phone') return i.message.split(' — ').pop();
@@ -930,7 +951,7 @@ function issueGroup(g) {
     }
     if (g.rule === 'User boundary') actions += `<button type="button" class="quiet" data-nav="3">Open Resolve names</button>`;
   }
-  actions += `<button type="button" class="quiet" data-ack="${esc(key)}">${g.rule === 'Targets on one child per parent' ? 'Keep as given' : g.sev === 'error' ? 'Ignore' : 'Mark as OK'}</button>`;
+  actions += `<button type="button" class="quiet" data-ack="${esc(key)}">${g.rule === 'Targets on one child per parent' ? 'Keep as given' : g.sev === 'error' ? 'Ignore this check' : 'Mark as OK'}</button>`;
   const detail = g.rule === 'Phone numbers' ? `${plural(g.list.length, 'user')} with a missing, invalid or repeated number` + (g.list.some((i) => i.rule === 'Phone already in template') ? ', or one already used in the template' : '') : first.codes ? esc(first.message.split(', e.g.')[0]) : first.variants && g.rule === 'Special characters' ? esc(first.message.split(' (e.g.')[0]) : g.list.length > 1 ? '' : esc(first.message);
   return `<div class="fact"><span class="mark ${sev}">!</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length > 1 ? g.list.length : (first.codes || first.variants || [0]).length)}</span>
     ${detail ? `<div class="d">${detail}</div>` : ''}${HINT[g.rule] ? `<div class="d">${esc(HINT[g.rule])}</div>` : ''}
