@@ -754,7 +754,7 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
   // ───────────────────────── phones ─────────────────────────
   /** Phones are written to the template as numbers, so the value is the national number without its leading 0:
    *  'ng' Nigeria 10 digits (8031234567; 11-digit numbers without a leading 0 are kept as given), 'sl' Sierra Leone
-   *  8 digits (76123456), 'raw' any 7–15 digits. Only the digit count is checked, not network prefixes. */
+   *  9 digits (761234567), 'raw' any 7–15 digits. Only the digit count is checked, not network prefixes. */
   const PHONE_ALIAS = { '11': 'ng', '10': 'ng', intl: 'ng', 'sl-intl': 'sl' };
   const PHONE_FORMATS = { ng: 'Nigeria', sl: 'Sierra Leone', raw: '' };
   function phoneCountry(tree) {
@@ -768,10 +768,10 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
     let d = cellStr(raw).replace(/\.0+$/, '').replace(/\D/g, '');
     if (!d) return { ok: false, value: '', reason: 'blank' };
     if (fmt === 'sl') {
-      if (d.startsWith('232') && d.length === 11) d = d.slice(3);
-      if (d.length === 9 && d.startsWith('0')) d = d.slice(1);
-      const ok = d.length === 8 && !d.startsWith('0');
-      return { ok, value: d, reason: ok ? '' : `should have 8 digits after the leading 0 (has ${d.replace(/^0/, '').length})` };
+      if (d.startsWith('232') && d.length === 12) d = d.slice(3);
+      d = d.replace(/^0+(?=\d{9}$)/, '');
+      const ok = d.length === 9 && !d.startsWith('0');
+      return { ok, value: d, reason: ok ? '' : `should have 9 digits after any leading 0 (has ${d.replace(/^0+/, '').length})` };
     }
     if (fmt === 'ng') {
       if (d.startsWith('234') && d.length === 13) d = d.slice(3);
@@ -1532,7 +1532,7 @@ function initDemo() {
   S.demo = {
     rows: roles.map((role) => ({ role, include: true, level: MP.defaultRoleLevel(S.tree, role), count: roles.length > 6 ? 1 : 2 })),
     allRoles: { on: true, level: hf >= 0 ? hf : Math.min(S.tree.depth, 4), count: 1 },
-    prefix: 'Demo', phoneStart: MP.phoneCountry(S.tree) === 'sl' ? '99990001' : '9099990001', activate: 'all', targets: true,
+    prefix: 'Demo', phoneStart: MP.phoneCountry(S.tree) === 'sl' ? '999900001' : '9099990001', activate: 'all', targets: true,
     empType: S.facts.employmentOptions.find((x) => /temp/i.test(x)) || S.facts.employmentOptions[0] || 'Temporary',
   };
 }
@@ -1611,7 +1611,7 @@ function activationField(id, mode, codes, label) {
 /** Same number with or without its leading 0 or country code → one key. */
 const phoneDigits = (v) => { const raw = String(v == null ? '' : v).replace(/\.0+$/, ''); if (!raw.replace(/\D/g, '')) return ''; return MP.normPhone(raw, S.cfg.phoneFmt).value.replace(/^0+/, ''); };
 function phoneOptions(cur) {
-  return opt('ng', 'Nigeria · 10 digits (8031234567)', cur) + opt('sl', 'Sierra Leone · 8 digits (76123456)', cur) + opt('raw', 'Any · 7–15 digits', cur);
+  return opt('ng', 'Nigeria · 10 digits (8031234567)', cur) + opt('sl', 'Sierra Leone · 9 digits (761234567)', cur) + opt('raw', 'Any · 7–15 digits', cur);
 }
 async function loadMicroplan(buf, name) {
   S.mpName = name; S.mpOrig = sheetsFromXLSX(buf, true);
