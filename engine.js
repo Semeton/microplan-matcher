@@ -863,7 +863,95 @@
     return out;
   }
 
-  root.MP = { PHONE_FORMATS, phoneCountry, nameFromCode, isHelperHash, prettyLevels, defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
+  // ───────────────────────── microplan on its own (no console template yet) ─────────────────────────
+  /** Role codes the console uses, for checking designations before a template exists. */
+  const STANDARD_ROLES = ['DISTRIBUTOR', 'REGISTRAR', 'HEALTH_FACILITY_WORKER', 'HEALTH_FACILITY_SUPERVISOR', 'WAREHOUSE_MANAGER', 'TEAM_SUPERVISOR',
+    'DISTRICT_SUPERVISOR', 'PROVINCIAL_SUPERVISOR', 'NATIONAL_SUPERVISOR', 'PROXIMITY_SUPERVISOR', 'CAMPAIGN_SUPERVISOR', 'DASHBOARD_VIEWER'];
+  const KIND_LABEL = { country: 'Country', state: 'State', lga: 'LGA', chiefdom: 'Chiefdom', ward: 'Ward', hf: 'Health Facility', dp: 'Distribution Point', community: 'Community' };
+  /** Generic level names used to read a microplan when there is no template to take them from. */
+  const GENERIC_LEVELS = ['Country', 'State', 'LGA', 'Ward', 'Health Facility', 'Community'];
+  /** The microplan's own boundary columns become the levels: column → level index, plus a readable label per level. */
+  function selfLevels(analysis) {
+    const cols = analysis.cols.filter((c) => c.kind && c.duplicateOf === undefined);
+    const levelMap = {}, levelLabels = [];
+    cols.forEach((c, i) => {
+      levelMap[c.c] = i;
+      let lab = KIND_LABEL[c.kind] || '';
+      if (!lab) { const raw = c.label.replace(/\s+/g, ' ').trim(); lab = raw && raw.length < 30 && !/^column [a-z]+$/i.test(raw) ? raw : 'Level ' + (i + 1); }
+      while (levelLabels.includes(lab)) lab += ' (2)';
+      levelLabels.push(lab);
+    });
+    return { levelMap, levelLabels };
+  }
+  /** Build a boundary tree from microplan records. Names that differ only in case or spacing are one node (first
+   *  spelling wins); other variants ("Ung. Ali" / "Ung Ali") stay separate and the near-duplicate check flags them,
+   *  because some templates really hold both. Codes are internal (MP000001…). */
+  function selfTree(records, levelLabels) {
+    const nodes = new Map(), byKey = new Map(), roots = [];
+    const tidy = (n) => String(n).replace(/\s+/g, ' ').trim();
+    let seq = 0, depth = 0;
+    const codeOf = (rec) => {
+      if (!rec.path || !rec.path.length) return null;
+      let parent = null, key = '';
+      for (let i = 0; i < rec.path.length; i++) {
+        const name = tidy(rec.path[i].name); key += '/' + name.toLowerCase(); // same name in other case/spacing = same place; other spellings stay separate and are flagged
+        let code = byKey.get(key);
+        if (!code) {
+          code = 'MP' + String(++seq).padStart(6, '0');
+          const pn = parent ? nodes.get(parent) : null;
+          const node = { code, name, level: i, path: (pn ? pn.path : []).concat([name]), parent, children: [] };
+          node.dpath = node.path; nodes.set(code, node); byKey.set(key, code);
+          if (pn) pn.children.push(code); else roots.push(code);
+          if (i > depth) depth = i;
+        }
+        parent = code;
+      }
+      return parent;
+    };
+    for (const r of records) if (!r.broken) codeOf(r);
+    return { nodes, roots, depth, levelLabels: levelLabels.slice(0, depth + 1), tech: {}, synthetic: 0, pathToHash: new Map(), self: true, codeOf };
+  }
+  /** Checks that only make sense on the microplan itself: leaf rows without targets, totals that do not add up. */
+  function microplanChecks(ctx) {
+    const { tree, matched, valueCols, valueLabels } = ctx; const issues = [];
+    const add = (severity, rule, message, ref) => issues.push({ severity, rule, message, ref: ref || '' });
+    if (valueCols.length) {
+      // parents whose total sits on a single child: the blank siblings are that pattern (reported separately), not gaps
+      const valued = new Map();
+      for (const m of matched) { if (!m.code) continue; const n = tree.nodes.get(m.code); if (n && n.parent && valueCols.some((c) => m.values[c] != null)) valued.set(n.parent, (valued.get(n.parent) || 0) + 1); }
+      for (const m of matched) {
+        if (!m.code) continue; const n = tree.nodes.get(m.code); if (!n || n.level !== tree.depth) continue;
+        if (valued.get(n.parent) === 1 && !valueCols.some((c) => m.values[c] != null)) continue;
+        const miss = valueCols.filter((c) => m.values[c] === undefined || m.values[c] === null);
+        if (miss.length) add('warn', 'Missing target', (miss.length === valueCols.length ? 'No target' : miss.map((c) => valueLabels[c] || 'col ' + c).join(', ') + ' blank') + ' for ' + label(tree, m.code), m.sheet + '!' + m.row);
+      }
+      // totals: find which columns add up to each total in most rows, then flag the rows that break that pattern
+      const totals = valueCols.filter((c) => /total/i.test(valueLabels[c] || ''));
+      const parts = valueCols.filter((c) => !totals.includes(c));
+      const has = (m, c) => m.values[c] !== undefined && m.values[c] !== null;
+      for (const total of totals) {
+        const rows = matched.filter((m) => m.code && has(m, total));
+        if (rows.length < 5 || parts.length < 2) continue;
+        let best = null;
+        const pool = parts.slice(0, 8);
+        for (let mask = 1; mask < (1 << pool.length); mask++) {
+          const sub = pool.filter((_, k) => mask & (1 << k)); if (sub.length < 2 || sub.length > 4) continue;
+          const usable = rows.filter((m) => sub.every((c) => has(m, c))); if (usable.length < rows.length * 0.5) continue;
+          const ok = usable.filter((m) => Math.abs(sub.reduce((x, c) => x + m.values[c], 0) - m.values[total]) <= 1).length;
+          const rate = ok / usable.length;
+          if (!best || rate > best.rate || (rate === best.rate && sub.length < best.sub.length)) best = { sub, rate, usable };
+        }
+        if (!best || best.rate < 0.8) continue;
+        for (const m of best.usable) {
+          const sum = best.sub.reduce((x, c) => x + m.values[c], 0);
+          if (Math.abs(sum - m.values[total]) > 1) add('warn', 'Total does not add up', `${valueLabels[total]} is ${Math.round(m.values[total] * 100) / 100} but ${best.sub.map((c) => valueLabels[c]).join(' + ')} = ${Math.round(sum * 100) / 100}`, m.sheet + '!' + m.row);
+        }
+      }
+    }
+    return issues;
+  }
+
+  root.MP = { STANDARD_ROLES, GENERIC_LEVELS, selfLevels, selfTree, microplanChecks, PHONE_FORMATS, phoneCountry, nameFromCode, isHelperHash, prettyLevels, defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
     valueFor, normPhone, validate, label, helpersFor, sha256hex, colLetter, aliasKey, hierKind, cellStr, toNum };
   if (typeof module !== 'undefined') module.exports = root.MP;
 })(typeof window !== 'undefined' ? window : globalThis);

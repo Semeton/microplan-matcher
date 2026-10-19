@@ -158,6 +158,34 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
   click('#steps [data-go="1"]'); await wait(50);
   await setFile('#fileTpl', 'Example_Akko_Unified_Template.xlsx', tplU8); await wait(100);
   console.log('[after reload] template:', txt(d.querySelector('.file .meta')));
+
+  // check a microplan with no template yet, then use the prepared file with the template
+  const corrected = await bytes(latest('_corrected.xlsx').data);
+  click('[data-mode="check"]'); await wait(100);
+  console.log('[check] files:', txt(d.querySelector('.intro h2')), '| boxes:', d.querySelectorAll('.file').length);
+  await setFile('#fileMp', 'Akko_microplan.xlsx', corrected); await wait(200);
+  console.log('   meta:', txt(d.querySelector('.file .meta')));
+  click('[data-nav="2"]'); console.log('   columns:', [...d.querySelectorAll('.facts .fact .t')].map((t) => txt(t).slice(0, 90)).join(' | '));
+  click('[data-nav="3"]'); await wait(50); console.log('   names:', txt(d.querySelector('.big')), txt(d.querySelector('.big + .muted')), '|', d.querySelectorAll('.card').length, 'cards');
+  click('#steps [data-go="4"]'); await wait(50);
+  console.log('   prepare:', txt(d.querySelector('.intro')), '\n   checks:', [...d.querySelectorAll('.facts .fact .t')].map((t) => t.childNodes[0].textContent.trim()).join(' | '));
+  if (!d.getElementById('btnPrep') || d.getElementById('btnFill')) { console.error('FAIL prepare buttons'); process.exit(1); }
+  click('#btnPrep'); await until(() => latest('_prepared.xlsx'));
+  const prepared = await bytes(latest('_prepared.xlsx').data);
+  const pw = XLSX.read(prepared, { type: 'array' });
+  console.log('   prepared sheets:', pw.SheetNames.map((n) => n + ' ' + (XLSX.utils.sheet_to_json(pw.Sheets[n], { header: 1 }).length - 1)).join(', '));
+  const prow = XLSX.utils.sheet_to_json(pw.Sheets.Users, { header: 1 });
+  if (prow.slice(1).some((r) => r[prow[0].indexOf('Phone Number')] !== undefined && typeof r[prow[0].indexOf('Phone Number')] === 'string' && /^\d+$/.test(r[prow[0].indexOf('Phone Number')]))) { console.error('FAIL prepared phones stored as text'); process.exit(1); }
+  click('[data-mode="plan"]'); await wait(100); click('#steps [data-go="1"]'); await wait(50);
+  await setFile('#fileMp', 'Akko_prepared.xlsx', prepared); await wait(200);
+  console.log('[prepared → template]', txt(d.querySelectorAll('.file .meta')[1]));
+  click('[data-nav="2"]'); click('[data-nav="3"]'); await wait(50);
+  const pct = txt(d.querySelector('.big')); console.log('   names:', pct, txt(d.querySelector('.big + .muted')), '|', d.querySelectorAll('.card').length, 'cards');
+  if (parseFloat(pct) < 99.5) { console.error('FAIL prepared file does not match the template cleanly'); process.exit(1); } // the example template holds two communities spelled Ung Ali / Ung. Ali
+  click('#steps [data-go="4"]'); await wait(50); console.log('   export:', txt(d.querySelector('.intro')));
+  click('#btnFill'); await until(() => saved.filter((x) => x.filename.endsWith('_filled.xlsx')).length >= 3);
+  rep = await verify(tplU8, await bytes(latest('_filled.xlsx').data));
+  console.log('   verify filled from prepared', rep.ok ? 'OK' : 'FAIL', 'users', rep.users, rep.ok ? '' : JSON.stringify(rep)); if (!rep.ok) process.exit(1);
   w.__mpm.state().example = true; click('#steps [data-go="1"]'); await wait(50); click('#clearEx'); await wait(100);
   console.log('[clear] continue disabled:', d.querySelector('[data-nav="2"]').disabled, '| try example link:', !!d.getElementById('loadEx'));
   for (const s of saved) {
