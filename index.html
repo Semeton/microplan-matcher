@@ -137,6 +137,7 @@ td select { min-width: 200px; }
 .modes button { border: 0; background: transparent; color: var(--muted); padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; }
 .modes button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
 .modes button:hover:not([aria-pressed="true"]) { background: transparent; color: var(--ink); }
+@media (max-width: 560px) { .modes { display: grid; grid-template-columns: 1fr 1fr; width: 100%; } .modes button { padding: 8px 6px; } }
 .demo-table td { vertical-align: middle; }
 .demo-table input[type="number"] { width: 64px; font: inherit; font-size: 0.88rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .demo-table td.role { font-weight: 500; }
@@ -171,6 +172,7 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
       <h1>Microplan Matcher</h1>
       <div class="modes" id="modes" role="group" aria-label="Mode">
         <button type="button" data-mode="plan" aria-pressed="true">From microplan</button>
+        <button type="button" data-mode="check" aria-pressed="false">Check microplan</button>
         <button type="button" data-mode="users" aria-pressed="false">Add users</button>
         <button type="button" data-mode="demo" aria-pressed="false">Demo users</button>
       </div>
@@ -1059,7 +1061,95 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
     return out;
   }
 
-  root.MP = { PHONE_FORMATS, phoneCountry, nameFromCode, isHelperHash, prettyLevels, defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
+  // ───────────────────────── microplan on its own (no console template yet) ─────────────────────────
+  /** Role codes the console uses, for checking designations before a template exists. */
+  const STANDARD_ROLES = ['DISTRIBUTOR', 'REGISTRAR', 'HEALTH_FACILITY_WORKER', 'HEALTH_FACILITY_SUPERVISOR', 'WAREHOUSE_MANAGER', 'TEAM_SUPERVISOR',
+    'DISTRICT_SUPERVISOR', 'PROVINCIAL_SUPERVISOR', 'NATIONAL_SUPERVISOR', 'PROXIMITY_SUPERVISOR', 'CAMPAIGN_SUPERVISOR', 'DASHBOARD_VIEWER'];
+  const KIND_LABEL = { country: 'Country', state: 'State', lga: 'LGA', chiefdom: 'Chiefdom', ward: 'Ward', hf: 'Health Facility', dp: 'Distribution Point', community: 'Community' };
+  /** Generic level names used to read a microplan when there is no template to take them from. */
+  const GENERIC_LEVELS = ['Country', 'State', 'LGA', 'Ward', 'Health Facility', 'Community'];
+  /** The microplan's own boundary columns become the levels: column → level index, plus a readable label per level. */
+  function selfLevels(analysis) {
+    const cols = analysis.cols.filter((c) => c.kind && c.duplicateOf === undefined);
+    const levelMap = {}, levelLabels = [];
+    cols.forEach((c, i) => {
+      levelMap[c.c] = i;
+      let lab = KIND_LABEL[c.kind] || '';
+      if (!lab) { const raw = c.label.replace(/\s+/g, ' ').trim(); lab = raw && raw.length < 30 && !/^column [a-z]+$/i.test(raw) ? raw : 'Level ' + (i + 1); }
+      while (levelLabels.includes(lab)) lab += ' (2)';
+      levelLabels.push(lab);
+    });
+    return { levelMap, levelLabels };
+  }
+  /** Build a boundary tree from microplan records. Names that differ only in case or spacing are one node (first
+   *  spelling wins); other variants ("Ung. Ali" / "Ung Ali") stay separate and the near-duplicate check flags them,
+   *  because some templates really hold both. Codes are internal (MP000001…). */
+  function selfTree(records, levelLabels) {
+    const nodes = new Map(), byKey = new Map(), roots = [];
+    const tidy = (n) => String(n).replace(/\s+/g, ' ').trim();
+    let seq = 0, depth = 0;
+    const codeOf = (rec) => {
+      if (!rec.path || !rec.path.length) return null;
+      let parent = null, key = '';
+      for (let i = 0; i < rec.path.length; i++) {
+        const name = tidy(rec.path[i].name); key += '/' + name.toLowerCase(); // same name in other case/spacing = same place; other spellings stay separate and are flagged
+        let code = byKey.get(key);
+        if (!code) {
+          code = 'MP' + String(++seq).padStart(6, '0');
+          const pn = parent ? nodes.get(parent) : null;
+          const node = { code, name, level: i, path: (pn ? pn.path : []).concat([name]), parent, children: [] };
+          node.dpath = node.path; nodes.set(code, node); byKey.set(key, code);
+          if (pn) pn.children.push(code); else roots.push(code);
+          if (i > depth) depth = i;
+        }
+        parent = code;
+      }
+      return parent;
+    };
+    for (const r of records) if (!r.broken) codeOf(r);
+    return { nodes, roots, depth, levelLabels: levelLabels.slice(0, depth + 1), tech: {}, synthetic: 0, pathToHash: new Map(), self: true, codeOf };
+  }
+  /** Checks that only make sense on the microplan itself: leaf rows without targets, totals that do not add up. */
+  function microplanChecks(ctx) {
+    const { tree, matched, valueCols, valueLabels } = ctx; const issues = [];
+    const add = (severity, rule, message, ref) => issues.push({ severity, rule, message, ref: ref || '' });
+    if (valueCols.length) {
+      // parents whose total sits on a single child: the blank siblings are that pattern (reported separately), not gaps
+      const valued = new Map();
+      for (const m of matched) { if (!m.code) continue; const n = tree.nodes.get(m.code); if (n && n.parent && valueCols.some((c) => m.values[c] != null)) valued.set(n.parent, (valued.get(n.parent) || 0) + 1); }
+      for (const m of matched) {
+        if (!m.code) continue; const n = tree.nodes.get(m.code); if (!n || n.level !== tree.depth) continue;
+        if (valued.get(n.parent) === 1 && !valueCols.some((c) => m.values[c] != null)) continue;
+        const miss = valueCols.filter((c) => m.values[c] === undefined || m.values[c] === null);
+        if (miss.length) add('warn', 'Missing target', (miss.length === valueCols.length ? 'No target' : miss.map((c) => valueLabels[c] || 'col ' + c).join(', ') + ' blank') + ' for ' + label(tree, m.code), m.sheet + '!' + m.row);
+      }
+      // totals: find which columns add up to each total in most rows, then flag the rows that break that pattern
+      const totals = valueCols.filter((c) => /total/i.test(valueLabels[c] || ''));
+      const parts = valueCols.filter((c) => !totals.includes(c));
+      const has = (m, c) => m.values[c] !== undefined && m.values[c] !== null;
+      for (const total of totals) {
+        const rows = matched.filter((m) => m.code && has(m, total));
+        if (rows.length < 5 || parts.length < 2) continue;
+        let best = null;
+        const pool = parts.slice(0, 8);
+        for (let mask = 1; mask < (1 << pool.length); mask++) {
+          const sub = pool.filter((_, k) => mask & (1 << k)); if (sub.length < 2 || sub.length > 4) continue;
+          const usable = rows.filter((m) => sub.every((c) => has(m, c))); if (usable.length < rows.length * 0.5) continue;
+          const ok = usable.filter((m) => Math.abs(sub.reduce((x, c) => x + m.values[c], 0) - m.values[total]) <= 1).length;
+          const rate = ok / usable.length;
+          if (!best || rate > best.rate || (rate === best.rate && sub.length < best.sub.length)) best = { sub, rate, usable };
+        }
+        if (!best || best.rate < 0.8) continue;
+        for (const m of best.usable) {
+          const sum = best.sub.reduce((x, c) => x + m.values[c], 0);
+          if (Math.abs(sum - m.values[total]) > 1) add('warn', 'Total does not add up', `${valueLabels[total]} is ${Math.round(m.values[total] * 100) / 100} but ${best.sub.map((c) => valueLabels[c]).join(' + ')} = ${Math.round(sum * 100) / 100}`, m.sheet + '!' + m.row);
+        }
+      }
+    }
+    return issues;
+  }
+
+  root.MP = { STANDARD_ROLES, GENERIC_LEVELS, selfLevels, selfTree, microplanChecks, PHONE_FORMATS, phoneCountry, nameFromCode, isHelperHash, prettyLevels, defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
     valueFor, normPhone, validate, label, helpersFor, sha256hex, colLetter, aliasKey, hierKind, cellStr, toNum };
   if (typeof module !== 'undefined') module.exports = root.MP;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -1600,6 +1690,7 @@ async function loadTemplate(buf, name) {
   S.tree = MP.parseTemplate(sheetsFromXLSX(buf, false));
   const ewb = await MPW.loadTemplate(ExcelJS, buf);
   S.facts = MPW.templateFacts(ewb);
+  S.tpl = { tree: S.tree, facts: S.facts };
   S.cfg.phoneFmt = MP.phoneCountry(S.tree);
   S._blist = null; S.add.rows = []; S.add.msg = '';
   loadAliases();
@@ -1652,11 +1743,37 @@ function applyEdits() {
       const c = (r || []).slice(); for (const k of Object.keys(pt)) c[k] = pt[k]; return c;
     }) }));
 }
+/* ───────── Check microplan: no template yet, so the microplan's own boundary rows are the reference ───────── */
+const isSelf = () => S.mode === 'check';
+const selfFacts = () => ({ targetKeys: [], roleOptions: MP.STANDARD_ROLES.slice(), employmentOptions: ['Permanent', 'Temporary'], userSheet: null, roleSlots: 5, existingUsers: [], facilityCount: 0, facilityActive: 0, facilities: [], mandatoryBlank: [] });
+const selfPlaceholder = (labels) => ({ levelLabels: labels || MP.GENERIC_LEVELS, nodes: new Map(), roots: [], depth: (labels || MP.GENERIC_LEVELS).length - 1, synthetic: 0, self: true });
+/** Switch between modes that use the template's hierarchy and Check microplan, which builds one from the microplan. */
+function setMode(m) {
+  const wasSelf = isSelf(); S.mode = m;
+  if (isSelf() && !wasSelf) { S.tree = selfPlaceholder(); S.facts = selfFacts(); S.aliases = {}; S.exportMsg = ''; if (S.mpSheets.length) { analyse(); guessPhoneFormat(); run(); } }
+  else if (!isSelf() && wasSelf) { S.tree = S.tpl ? S.tpl.tree : null; S.facts = S.tpl ? S.tpl.facts : null; S.exportMsg = ''; if (S.tree) { loadAliases(); S.cfg.phoneFmt = MP.phoneCountry(S.tree); } if (ready()) { analyse(); run(); } else S.res = null; }
+}
+/** Without a template, guess the phone format from the people in the microplan. */
+function guessPhoneFormat() {
+  const ua = A(S.cfg.userSheet); if (!ua || S.cfg.person.phone === '' || S.cfg.person.phone == null) return;
+  const sh = S.mpSheets.find((x) => x.name === S.cfg.userSheet); const ph = sh.rows.slice(ua.headerRow + 1, ua.headerRow + 400).map((r) => (r || [])[S.cfg.person.phone]).filter((v) => MP.cellStr(v));
+  const score = (f) => ph.filter((v) => MP.normPhone(v, f).ok).length;
+  const ng = score('ng'), sl = score('sl'); S.cfg.phoneFmt = ng >= sl && ng > ph.length / 3 ? 'ng' : sl > ph.length / 3 ? 'sl' : 'raw';
+}
+/** Numeric columns that look like targets become the "target" columns when there is no template to say which. */
+function selfTargets(a) {
+  const ok = (c) => c.numeric && !c.kind && !/%|ratio|number of|count of|no\.? of|\blat\b|latitude|longitude|\blng\b|adjusted|weighted|\bsum of\b/i.test(c.label);
+  // columns labelled “target” win; otherwise population / children / bednet columns
+  let cols = a.cols.filter((c) => ok(c) && /target/i.test(c.label));
+  if (!cols.length) cols = a.cols.filter((c) => ok(c) && /population|children|month|total|eligible|bednet|\bnets?\b|household/i.test(c.label));
+  S.facts.targetKeys = cols.map((c) => ({ key: 'C' + c.c, label: c.label.replace(/\s+/g, ' ').trim(), sheet: a.sheet, mandatory: false }));
+  S.cfg.targetMap = Object.fromEntries(cols.map((c) => ['C' + c.c, c.c]));
+}
 const parseRef = (ref) => { const i = ref.lastIndexOf('!'); return { sheet: ref.slice(0, i), ri: Number(ref.slice(i + 1)) - 1 }; };
 const cellAt = (sheet, ri, col) => { const sh = S.mpSheets.find((x) => x.name === sheet); return sh ? MP.cellStr((sh.rows[ri] || [])[col]) : ''; };
 
 function analyse() {
-  const labels = S.tree ? S.tree.levelLabels : [];
+  const labels = isSelf() ? MP.GENERIC_LEVELS : S.tree ? S.tree.levelLabels : [];
   S.analyses = S.mpSheets.map((sh) => MP.analyseSheet(sh, labels)).map((a, i) => a && Object.assign(a, { idx: i }));
   const cands = S.analyses.filter((a) => a && a.cols.filter((c) => c.kind).length >= 2);
   const boundaryC = cands.filter((a) => !(a.person.name && a.person.phone));
@@ -1677,7 +1794,8 @@ function similarSheets(best) {
 }
 const rowsAll = () => [S.cfg.sheet].concat(S.cfg.extra).reduce((n, name) => n + ((A(name) || {}).nRows || 0), 0);
 function setupBoundarySheet() {
-  const a = A(S.cfg.sheet); if (!a || !S.tree) { S.cfg.levelMap = {}; S.cfg.targetMap = {}; return; }
+  const a = A(S.cfg.sheet); if (!a || !S.tree) { S.cfg.levelMap = {}; S.cfg.targetMap = {}; if (isSelf()) S.tree = selfPlaceholder(); return; }
+  if (isSelf()) { const L = MP.selfLevels(a); S.cfg.levelMap = L.levelMap; S.selfLabels = L.levelLabels; S.tree = selfPlaceholder(L.levelLabels); selfTargets(a); return; }
   S.cfg.levelMap = MP.autoLevelMap(a, S.tree);
   const vc = MP.suggestValueCols(a, S.facts.targetKeys);
   S.cfg.targetMap = {};
@@ -1712,7 +1830,12 @@ function run() {
       seen.add(k); recs.push(r);
     }
   }
-  const { matched, decisions } = MP.matchRecords(S.tree, recs, S.aliases);
+  let matched, decisions;
+  if (isSelf()) {
+    S.tree = MP.selfTree(recs, S.selfLabels || MP.GENERIC_LEVELS);
+    matched = recs.map((r) => (r.broken ? Object.assign({}, r, { status: 'broken', code: null, steps: [] }) : Object.assign({}, r, { status: 'exact', code: S.tree.codeOf(r), steps: [] })));
+    decisions = [];
+  } else ({ matched, decisions } = MP.matchRecords(S.tree, recs, S.aliases));
   const agg = MP.aggregate(S.tree, matched, valueCols, { liftSingle: S.cfg.liftSingle });
   let users = [], uDecisions = [];
   if (S.cfg.userSheet && S.cfg.person.name !== '' && S.cfg.person.phone !== '') {
@@ -1729,7 +1852,15 @@ function run() {
   const issues = MP.validate({ tree: S.tree, matched, agg, valueCols, valueLabels, users: users.filter((u) => !u.skipped), hfLevel: hfLevel >= 0 ? hfLevel : null, specialCharsCheck: true });
   // people already in the template (adding to a filled template): the console rejects a phone used twice
   const have = new Map(S.facts.existingUsers.filter((u) => phoneDigits(u.phone)).map((u) => [phoneDigits(u.phone), u]));
-  for (const u of users) if (u.code && !u.role) issues.push({ severity: 'error', rule: 'No role', message: `${u.person.name || 'Person'}: designation “${u.person.role || '(blank)'}” is not a role in this template`, ref: u.ref });
+  for (const u of users) if (u.code && !u.role) issues.push({ severity: 'error', rule: 'No role', message: `${u.person.name || 'Person'}: designation “${u.person.role || '(blank)'}” ${isSelf() ? 'does not map to a console role' : 'is not a role in this template'}`, ref: u.ref });
+  if (isSelf()) {
+    issues.push(...MP.microplanChecks({ tree: S.tree, matched, valueCols, valueLabels }));
+    // text where a number is expected (" - ", "N/A", "12o") — the console needs numbers
+    for (const m of matched) for (const c of valueCols) {
+      const col = m.sheet === S.cfg.sheet ? c : colByLabel(A(m.sheet), a, c); if (col == null) continue;
+      const raw = cellAt(m.sheet, m.row - 1, col); if (raw && (m.values[c] === undefined || m.values[c] === null)) issues.push({ severity: 'error', rule: 'Not a number', message: `${valueLabels[c] || 'value'} = “${raw}”`, ref: m.sheet + '!' + m.row });
+    }
+  }
   for (const u of users) { const hit = u.phoneNorm.ok && have.get(phoneDigits(u.phoneNorm.value)); if (hit) { u.phoneNorm = Object.assign({}, u.phoneNorm, { ok: false, reason: `already in the template (${hit.name}, row ${hit.row})` }); issues.push({ severity: 'error', rule: 'Phone already in template', message: `${u.person.name}: ${u.phoneNorm.value || u.person.phone} is already used by ${hit.name} (template row ${hit.row})`, ref: u.ref }); } }
   const dmap = new Map();
   for (const d of decisions.concat(uDecisions)) { const e = dmap.get(d.key); if (e) { e.count += d.count; e.rows = e.rows.concat(d.rows).slice(0, 5); } else dmap.set(d.key, Object.assign({}, d)); }
@@ -1743,7 +1874,7 @@ function remapByLabel(an, primary, lm) {
 function colByLabel(an, primary, c) { const lab = MP.basicNorm((primary.cols[c] || {}).label); const hit = an.cols.find((x) => MP.basicNorm(x.label) === lab); return hit ? hit.c : null; }
 
 const needs = () => (S.res ? S.res.decisions.filter((d) => ['review', 'ambiguous', 'unmatched'].includes(d.status) && d.aliasKey) : []);
-const ready = () => !!(S.tree && S.mpSheets.length);
+const ready = () => !!(S.mpSheets.length && (S.tree || isSelf()));
 /** Users that will be written: matched, and — when leaving out bad rows — with a valid phone, a role, and a phone
  *  not already taken by an earlier row (the console rejects repeated phones; the first one wins). */
 function addableUsers() {
@@ -1760,8 +1891,9 @@ const usedCodes = () => (S.res ? S.res.matched.map((m) => m.code).concat(S.res.u
 // ───────── shell ─────────
 function render() {
   document.querySelectorAll('#modes button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === S.mode)));
-  $('steps').hidden = S.mode !== 'plan';
-  $('tagline').textContent = { demo: 'Create test users for every role across the boundary hierarchy, for demos and UAT.', users: 'Add people to a unified template, including one that already has users.', plan: 'Turn a microplan into a filled DIGIT HCM unified template.' }[S.mode];
+  $('steps').hidden = S.mode !== 'plan' && S.mode !== 'check';
+  document.querySelector('#steps [data-go="4"]').textContent = isSelf() ? 'Prepare' : 'Export';
+  $('tagline').textContent = { demo: 'Create test users for every role across the boundary hierarchy, for demos and UAT.', users: 'Add people to a unified template, including one that already has users.', plan: 'Turn a microplan into a filled DIGIT HCM unified template.', check: 'Check a microplan before the console template exists, fix it, and keep it ready for ingestion.' }[S.mode];
   if (S.mode === 'demo') { $('view').innerHTML = viewDemo(); return; }
   if (S.mode === 'users') { $('view').innerHTML = viewAdd(); return; }
   const can ={ 1: true, 2: ready(), 3: ready() && !!S.res, 4: ready() && !!S.res };
@@ -1774,7 +1906,7 @@ function render() {
 }
 function go(n) { S.step = n; render(); window.scrollTo({ top: 0 }); }
 $('steps').addEventListener('click', (e) => { const b = e.target.closest('button[data-go]'); if (b && !b.disabled) go(Number(b.dataset.go)); });
-$('modes').addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (!b) return; S.mode = b.dataset.mode; if (S.mode === 'demo' && S.tree && !S.demo) initDemo(); if (S.mode === 'users' && S.tree && !S.add.rows.length) addRow(); render(); });
+$('modes').addEventListener('click', (e) => { const b = e.target.closest('button[data-mode]'); if (!b) return; setMode(b.dataset.mode); if (S.step > 1 && !ready()) S.step = 1; if (S.mode === 'demo' && S.tree && !S.demo) initDemo(); if (S.mode === 'users' && S.tree && !S.add.rows.length) addRow(); render(); });
 
 // ───────── demo users ─────────
 function viewDemo() {
@@ -2023,11 +2155,17 @@ function viewFiles() {
   const withUsers = a && ua0 ? ` · ${plural(ua0.nRows, 'person', 'people')} on “${esc(S.cfg.userSheet)}”` : '';
   const mpMeta = !S.mpSheets.length ? '' : a ? (S.cfg.extra.length ? `${plural(rowsAll(), 'row')} on ${S.cfg.extra.length + 1} sheets with the same layout` : `${plural(a.nRows, 'row')} on “${esc(S.cfg.sheet)}”`) + withUsers
     : ua0 ? `${plural(ua0.nRows, 'person', 'people')} on “${esc(S.cfg.userSheet)}”, no targets` : 'No sheet with State / LGA / Ward columns found';
+  if (isSelf()) return `<div class="intro"><h2>Add the microplan</h2><p class="muted small">No unified template needed yet. The microplan's own boundary rows are used to check targets, names and users. Fix what's wrong, then download a prepared microplan; when the console's template is ready, use it in From microplan.</p></div>
+    <div class="files">${fileBox('fileMp', '.xlsx,.xls,.xlsm,.csv', !!S.mpSheets.length, S.mpName, mpMeta, 'Microplan', 'MP')}</div>
+    ${S.example ? `<p class="example">You're looking at example data for Akko LGA. <button type="button" class="quiet" id="clearEx">Start empty</button></p>` : (!S.mpSheets.length && SAMPLE ? `<p class="example"><button type="button" class="quiet" id="loadEx">Try it with example data</button></p>` : '')}
+    <div class="status" role="status">${esc(S.busy)}</div>
+    ${nav(0, 'Continue', ready())}`;
   return `<div class="intro"><h2>Add the two files</h2><p class="muted small">The template comes from the console for this campaign. It can already hold users; new ones are added after them. The microplan can be a v4.1 microplan, a Master Data sheet, or just a user list.</p></div>
     <div class="files">
       ${fileBox('fileTpl', '.xlsx', !!S.tree, S.tplName, tplMeta, 'Unified template', 'XLS')}
       ${fileBox('fileMp', '.xlsx,.xls,.xlsm,.csv', !!S.mpSheets.length, S.mpName, mpMeta, 'Microplan', 'MP')}
     </div>
+    ${S.mpSheets.length && !S.tree ? `<p class="example">No unified template yet? <button type="button" class="quiet" data-switch="check">Check and prepare the microplan now</button></p>` : ''}
     ${S.example ? `<p class="example">You're looking at example data for Akko LGA. <button type="button" class="quiet" id="clearEx">Start empty</button></p>` : (!ready() && SAMPLE ? `<p class="example"><button type="button" class="quiet" id="loadEx">Try it with example data</button></p>` : '')}
     <div class="status" role="status">${esc(S.busy)}</div>
     ${nav(0, 'Continue', ready())}`;
@@ -2046,7 +2184,8 @@ function viewColumns() {
   const facts = [
     a ? fact('ok', S.cfg.extra.length ? `Rows from ${S.cfg.extra.length + 1} sheets` : `Rows from <b>${esc(S.cfg.sheet)}</b>`, S.cfg.extra.length ? `${plural(rowsAll(), 'row')} · ${[S.cfg.sheet].concat(S.cfg.extra).map(esc).join(', ')}` : plural(a.nRows, 'row')) : fact('ok', 'User list only', 'No target rows in this file; only users are added'),
     fact(mappedLv.length >= 2 ? 'ok' : 'err', 'Boundary columns', mappedLv.length ? mappedLv.join(' › ') : 'None mapped'),
-    !a ? '' : tk.length ? fact(tFilled.length === tk.length ? 'ok' : 'warn', 'Targets', tFilled.length ? tFilled.map((t) => `${esc(t.label)} ← ${esc((a.cols[S.cfg.targetMap[t.key]] || {}).label)}`).join('<br>') + (tFilled.length < tk.length ? `<br>${tk.length - tFilled.length} template column${tk.length - tFilled.length > 1 ? 's' : ''} left blank` : '') : 'No target columns matched')
+    !a ? '' : isSelf() ? fact(tFilled.length ? 'ok' : 'warn', 'Target columns', tFilled.length ? tFilled.map((t) => esc(t.label)).join('<br>') : 'None found — choose them under Edit columns')
+      : tk.length ? fact(tFilled.length === tk.length ? 'ok' : 'warn', 'Targets', tFilled.length ? tFilled.map((t) => `${esc(t.label)} ← ${esc((a.cols[S.cfg.targetMap[t.key]] || {}).label)}`).join('<br>') + (tFilled.length < tk.length ? `<br>${tk.length - tFilled.length} template column${tk.length - tFilled.length > 1 ? 's' : ''} left blank` : '') : 'No target columns matched')
       : fact('ok', 'Targets', 'This template has no target sheet'),
     ua ? fact(unmappedRoles ? 'warn' : 'ok', `${plural(ua.nRows, 'person', 'people')} from <b>${esc(S.cfg.userSheet)}</b>`, roleSummary() || 'No designation column')
        : fact('ok', 'Users', 'No user list in this microplan'),
@@ -2055,13 +2194,13 @@ function viewColumns() {
   return `<div class="intro"><h2>Check the columns</h2><p class="muted small">Detected automatically. Open the editor only if something below is wrong.</p></div>
     <div class="facts">${facts}</div>
     <details class="edit"${S._editOpen ? ' open' : ''} id="editMap"><summary>Edit columns</summary>${mappingForm(a || ua, ua, !a)}</details>
-    ${nav(1, 'Match names', mappedLv.length >= 2)}`;
+    ${nav(1, isSelf() ? 'Continue' : 'Match names', mappedLv.length >= 2)}`;
 }
 /** Designations with their roles; one-off values (often a name typed into the wrong column) are counted, not listed. */
 function roleSummary() {
   const cnt = S.cfg.roleCount || {}; const all = Object.entries(S.cfg.roleMap);
   const main = all.filter(([d]) => (cnt[d] || 0) > 1 || all.length <= 12), rest = all.filter((e) => !main.includes(e));
-  return main.map(([d, r]) => `${esc(d)} → ${r ? esc(r) : '<i>no role chosen</i>'}`).join(' · ') + (rest.length ? ` · and ${plural(rest.length, 'one-off value')} (${rest.filter(([, r]) => !r).length} without a role, listed on the export step)` : '');
+  return main.map(([d, r]) => `${esc(d)} → ${r ? esc(roleName(r)) : '<i>no role chosen</i>'}`).join(' · ') + (rest.length ? ` · and ${plural(rest.length, 'one-off value')} (${rest.filter(([, r]) => !r).length} without a role, listed on the export step)` : '');
 }
 function mappingForm(a, ua, usersOnly) {
   const lv = (cur) => `<option value="">Ignore</option>` + S.tree.levelLabels.map((l, i) => opt(i, l, cur)).join('');
@@ -2074,7 +2213,10 @@ function mappingForm(a, ua, usersOnly) {
     ${!usersOnly && sheets.length > 1 ? `<div class="row"><label>Also read these sheets <span class="muted small">(same columns)</span></label><div style="display:flex;flex-wrap:wrap;gap:4px 12px">${sheets.filter((x) => x.sheet !== S.cfg.sheet && !(x.person.name && x.person.phone)).map((x) => `<label class="check"><input type="checkbox" data-extra="${esc(x.sheet)}"${S.cfg.extra.includes(x.sheet) ? ' checked' : ''}> ${esc(x.sheet)}</label>`).join('')}</div></div>` : ''}
     <div class="group-title">Boundary levels${usersOnly ? ' in the user list' : ''}</div>
     ${hierCols.map((c) => `<div class="row"><label for="lvl-${c.c}">${esc(c.label)} <span class="mono">${MP.colLetter(c.c)}</span></label><select id="lvl-${c.c}" data-lvl="${c.c}"${usersOnly ? ' data-ulvl="1"' : ''}>${lv(lmap[c.c] ?? '')}</select></div>`).join('')}`;
-  if (S.facts.targetKeys.length && !usersOnly) {
+  if (isSelf() && !usersOnly) {
+    const numAll = a.cols.filter((c) => c.numeric && !c.kind);
+    h += `<div class="group-title">Target columns</div><div style="display:flex;flex-wrap:wrap;gap:4px 14px">${numAll.map((c) => `<label class="check"><input type="checkbox" data-selftgt="${c.c}"${S.cfg.targetMap['C' + c.c] !== undefined ? ' checked' : ''}> ${esc(c.label)}</label>`).join('')}</div>`;
+  } else if (S.facts.targetKeys.length && !usersOnly) {
     h += `<div class="group-title">Targets</div>` + S.facts.targetKeys.map((t, i) => `<div class="row"><label for="tgt-${i}">${esc(t.label)}</label><select id="tgt-${i}" data-tgt="${esc(t.key)}"><option value="">Leave blank</option>${numCols.map((c) => opt(c.c, c.label, S.cfg.targetMap[t.key])).join('')}</select></div>`).join('')
       + `<div class="row"><label for="selSplit">If the template lists smaller areas than the microplan</label><select id="selSplit">${opt('flag', 'Leave those rows blank', S.cfg.splitMode)}${opt('even', 'Split evenly across them', S.cfg.splitMode)}${opt('first', 'Put it all on the first one', S.cfg.splitMode)}</select></div>`;
   }
@@ -2096,12 +2238,12 @@ function mappingForm(a, ua, usersOnly) {
 const STATUS_LABEL = { exact: 'Exact', alias: 'Your choice', fuzzy: 'Close match', review: 'Needs review', ambiguous: 'Two possible', unmatched: 'Not found', skipped: 'Skipped' };
 function viewNames() {
   const R = S.res; const q = needs();
-  const pool = R.matched.length ? R.matched : R.users;
+  const pool = isSelf() ? R.users : R.matched.length ? R.matched : R.users;
   const resolved = pool.filter((m) => m.code).length; const total = pool.length || 1;
   const pct = 100 * resolved / total;
   const auto = R.decisions.filter((d) => d.status === 'fuzzy' || d.status === 'alias' || d.status === 'skipped');
-  let h = `<div class="intro"><h2>Resolve names</h2><p class="muted small">Each name is decided once and remembered for the next cycle.</p></div>
-    <div style="display:grid;gap:10px"><div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><span class="big">${pct.toFixed(pct === 100 ? 0 : 1)}%</span><span class="muted">of ${plural(pool.length, R.matched.length ? 'row' : 'person', R.matched.length ? null : 'people')} matched to a boundary</span></div>
+  let h = `<div class="intro"><h2>Resolve names</h2><p class="muted small">${isSelf() ? 'People whose facility or ward name does not match a boundary row in the microplan. The prepared file uses the name you pick.' : 'Each name is decided once and remembered for the next cycle.'}</p></div>
+    <div style="display:grid;gap:10px"><div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><span class="big">${pct.toFixed(pct === 100 ? 0 : 1)}%</span><span class="muted">of ${plural(pool.length, R.matched.length && !isSelf() ? 'row' : 'person', R.matched.length && !isSelf() ? null : 'people')} ${isSelf() ? 'placed on a boundary from the microplan' : 'matched to a boundary'}</span></div>
     <div class="progress"><span style="width:${pct.toFixed(2)}%"></span></div></div>`;
   if (q.length) {
     h += `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><b>${plural(q.length, 'name')} need${q.length === 1 ? 's' : ''} you</b>${q.some((d) => d.status === 'review') ? '<button type="button" class="quiet" id="acceptTop">Accept all suggestions</button>' : ''}</div>
@@ -2117,8 +2259,8 @@ function viewNames() {
         <label><span class="rc-label">Matched to</span><select data-auto="${i}" aria-label="Boundary for ${esc(d.name)}">${choiceOptions(d, d.code || (d.status === 'skipped' ? '__SKIP__' : ''))}</select></label>
       </div></div>`).join('')}</div></details>`;
   }
-  h += `<div class="nav"><button type="button" class="quiet" data-nav="2">← Back</button><button type="button" class="primary" data-nav="4">Continue</button></div>
-    <p class="small muted" style="display:flex;gap:4px 10px;flex-wrap:wrap;align-items:center">${plural(Object.keys(S.aliases).length, 'name choice')} remembered in this browser for the next cycle${S.example ? ' (not kept for the example)' : ''}.
+  h += `<div class="nav"><button type="button" class="quiet" data-nav="2">← Back</button><button type="button" class="primary" data-nav="4">Continue</button></div>`;
+  if (!isSelf()) h += `<p class="small muted" style="display:flex;gap:4px 10px;flex-wrap:wrap;align-items:center">${plural(Object.keys(S.aliases).length, 'name choice')} remembered in this browser for the next cycle${S.example ? ' (not kept for the example)' : ''}.
       <button type="button" class="quiet" id="expAlias">Export</button>
       <label class="quiet" style="position:relative;color:var(--accent);cursor:pointer;padding:0 6px">Import<input type="file" id="impAlias" accept=".json" style="position:absolute;inset:0;opacity:0;cursor:pointer" aria-label="Import decisions"></label></p>`;
   S._q = q.slice(0, 25); S._auto = auto.slice(0, 300);
@@ -2188,8 +2330,10 @@ function viewExport() {
   const all = Array.from(groups.values()).sort((a, b) => (a.sev === b.sev ? a.rule.localeCompare(b.rule) : a.sev === 'error' ? -1 : 1));
   const active = all.filter((g) => !S.acks.has(g.rule)), acked = all.filter((g) => S.acks.has(g.rule));
   const nErr = active.filter((g) => g.sev === 'error').length, nWarn = active.length - nErr;
-  const headline = nErr ? `${plural(nErr, 'problem')} to fix before upload` : nWarn ? `Ready, with ${plural(nWarn, 'thing')} to check` : 'Ready to upload';
-  const lines = [
+  const headline = isSelf() ? (nErr ? `${plural(nErr, 'problem')} to fix in the microplan` : nWarn ? `Microplan is ready, with ${plural(nWarn, 'thing')} to check` : 'Microplan is ready for ingestion')
+    : nErr ? `${plural(nErr, 'problem')} to fix before upload` : nWarn ? `Ready, with ${plural(nWarn, 'thing')} to check` : 'Ready to upload';
+  const perLevel = isSelf() ? S.tree.levelLabels.map((l, i) => { let n = 0; for (const x of S.tree.nodes.values()) if (x.level === i) n++; return n > 1 || i === S.tree.depth ? `${fmt(n)} ${esc(n === 1 ? l : pluralWord(l))}` : null; }).filter(Boolean).join(' · ') : '';
+  const lines = isSelf() ? [perLevel, tmap.length ? `${fmt(filled)} of ${fmt(rows)} ${esc(S.tree.levelLabels[leaf])} rows have targets` : 'No target columns chosen', S.cfg.userSheet ? `${fmt(willAdd)} of ${plural(R.users.length, 'person', 'people')} ready` : null].filter(Boolean) : [
     R.matched.length ? `${fmt(R.matched.length - unresolved)} of ${plural(R.matched.length, 'row')} matched` : null,
     tmap.length ? `${fmt(filled)} of ${fmt(rows)} ${esc(S.tree.levelLabels[leaf])} rows get targets` : null,
     S.cfg.userSheet ? `${fmt(willAdd)} of ${plural(R.users.length, 'user')} will be added` + (S.facts.existingUsers.length ? ` after the ${fmt(S.facts.existingUsers.length)} already in the template` : '') : null,
@@ -2214,11 +2358,11 @@ function viewExport() {
     ${active.length || lifted || editsBox ? `<div class="facts">${editsBox}${lifted}${active.map(issueGroup).join('')}</div>` : ''}
     ${acked.length ? `<details class="edit"><summary>${plural(acked.length, 'check')} marked as OK</summary><div class="facts">${acked.map((g) => `<div class="fact"><span class="mark ok">✓</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span><div class="d"><button type="button" class="quiet" data-unack="${esc(g.rule)}">Undo</button></div></div></div>`).join('')}</div></details>` : ''}
     ${S.facts.facilityCount ? `<div class="settings">${activationField('selAct', S.activate, usedCodes(), 'Facilities to mark Active', 'In the microplan’s area')}</div>` : ''}
-    <p class="muted small">Edits change this run and the corrected microplan, never your original file. Only target cells, new user rows and facility status are written to the template; hidden helper columns and dropdowns stay as the console made them.</p>
+    <p class="muted small">${isSelf() ? 'The prepared microplan has one clean sheet of boundaries and targets (spellings unified, per-LGA sheets merged, header and total rows removed), a Users sheet with phones and console roles, and the checks. When the console’s unified template is ready, open From microplan with the template and this file.' : 'Edits change this run and the corrected microplan, never your original file. Only target cells, new user rows and facility status are written to the template; hidden helper columns and dropdowns stay as the console made them.'}</p>
     ${nav(3)}
     <div class="actionbar">
-      <div class="state${nErr ? ' err' : ''}">${nErr ? `${plural(nErr, 'problem')} left — you can still download, but the console may reject those rows` : nWarn ? `Ready · ${plural(nWarn, 'thing')} to check` : 'Ready to upload'}</div>
-      <div class="row-btns"><button type="button" class="primary" id="btnFill">Download filled template</button><button type="button" class="quiet" id="btnReport">Download report</button></div>
+      <div class="state${nErr ? ' err' : ''}">${nErr ? `${plural(nErr, 'problem')} left — you can still download, but ${isSelf() ? 'fix them before ingestion' : 'the console may reject those rows'}` : nWarn ? `Ready · ${plural(nWarn, 'thing')} to check` : isSelf() ? 'Ready for ingestion' : 'Ready to upload'}</div>
+      <div class="row-btns">${isSelf() ? '<button type="button" class="primary" id="btnPrep">Download prepared microplan</button>' : '<button type="button" class="primary" id="btnFill">Download filled template</button><button type="button" class="quiet" id="btnReport">Download report</button>'}</div>
       <div class="status" id="expStatus" role="status">${esc(S.exportMsg)}</div>
     </div>`;
 }
@@ -2266,7 +2410,7 @@ function issueGroup(g) {
   } else if (first.codes) {
     body = addUserGrid(first.codes, first.need, showAll);
     if (first.codes.length > ROWS_SHOWN) actions += `<button type="button" class="quiet" data-toggle="${esc(key)}">${showAll ? 'Show fewer' : 'Show all ' + fmt(first.codes.length)}</button>`;
-  } else if (g.rule === 'Targets on one child per parent') {
+  } else if (g.rule === 'Targets on one child per parent' && !isSelf()) {
     actions += `<button type="button" class="quiet" data-act="spread">Spread each total across its ${esc(S.tree.levelLabels[S.tree.depth])} rows</button>`;
   } else {
     const refs = Array.from(new Set(g.list.flatMap((i) => [i.ref].concat(i.refs || [])).filter(Boolean)));
@@ -2392,6 +2536,7 @@ const view = $('view');
 view.addEventListener('click', async (e) => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.dataset.nav !== undefined) { const n = Number(t.dataset.nav); if (n >= 1) go(n); return; }
+  if (t.dataset.switch) { setMode(t.dataset.switch); S.step = ready() ? S.step : 1; render(); return; }
   if (t.id === 'loadEx') { await bootExample(); return; }
   if (t.id === 'clearEx') { clearAll(); render(); return; }
   if (t.dataset.pick !== undefined) { const d = S._q[Number(t.dataset.pick)]; decide(d, t.dataset.code); return; }
@@ -2417,6 +2562,7 @@ view.addEventListener('click', async (e) => {
   if (t.id === 'dFill') { demoFill(t); return; }
   if (t.id === 'dList') { demoCsv(); return; }
   if (t.id === 'btnFill') { fillAndSave(t); return; }
+  if (t.id === 'btnPrep') { savePrepared(); return; }
   if (t.id === 'btnReport') { saveReport(); return; }
 });
 view.addEventListener('toggle', (e) => { if (e.target.id === 'exBox') S.open.__ex = e.target.open; if (e.target.id === 'editMap') S._editOpen = e.target.open; if (e.target.id === 'autoBox') { S.showAuto = e.target.open; e.target.querySelector('summary').textContent = (S.showAuto ? 'Hide ' : 'Review ') + plural(S._auto.length, 'close match', 'close matches'); } }, true);
@@ -2428,7 +2574,7 @@ view.addEventListener('change', async (e) => {
     const f = t.files[0]; if (!f) return;
     if (S.example) clearAll();
     S.busy = `Reading ${f.name}…`; render(); await tick();
-    try { const buf = await f.arrayBuffer(); if (t.id === 'fileTpl') { await loadTemplate(buf, f.name); initDemo(); S.demoMsg = ''; if (S.facts.existingUsers.length && S.mode === 'plan') toast(`${plural(S.facts.existingUsers.length, 'user')} already in this template; new ones are added after them`); } else await loadMicroplan(buf, f.name); if (ready()) { analyse(); run(); } S.busy = ''; }
+    try { const buf = await f.arrayBuffer(); if (t.id === 'fileTpl') { await loadTemplate(buf, f.name); initDemo(); S.demoMsg = ''; if (S.facts.existingUsers.length && S.mode === 'plan') toast(`${plural(S.facts.existingUsers.length, 'user')} already in this template; new ones are added after them`); } else await loadMicroplan(buf, f.name); if (ready()) { analyse(); if (isSelf()) guessPhoneFormat(); run(); } S.busy = ''; }
     catch (err) { console.error(err); S.busy = `Could not read ${f.name}. ${err && err.message ? err.message : ''}`; }
     render(); return;
   }
@@ -2505,6 +2651,7 @@ view.addEventListener('change', async (e) => {
   else if (t.id === 'selEmp') S.cfg.empType = t.value;
   else if (t.id === 'skipBad') S.cfg.skipBadUsers = t.checked;
   else if (t.id === 'selAct') { S.activate = t.value; S.exportMsg = ''; render(); return; }
+  else if (t.dataset.selftgt !== undefined) { const c = Number(t.dataset.selftgt), k = 'C' + c, col = A(S.cfg.sheet).cols[c]; if (t.checked) { S.cfg.targetMap[k] = c; if (!S.facts.targetKeys.find((x) => x.key === k)) S.facts.targetKeys.push({ key: k, label: col.label, sheet: S.cfg.sheet, mandatory: false }); } else { delete S.cfg.targetMap[k]; S.facts.targetKeys = S.facts.targetKeys.filter((x) => x.key !== k); } }
   else return;
   run(); render();
 });
@@ -2559,9 +2706,38 @@ function saveReport() {
   saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_match_report.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
 }
 
+/** Prepared microplan: clean boundaries + targets, users with console roles, and the checks — ready for From microplan. */
+function savePrepared() {
+  const R = S.res, T = S.tree; const a = A(S.cfg.sheet);
+  const valueCols = R.valueCols; const vLabel = (c) => ((a && a.cols[c]) || {}).label || 'Value';
+  const levels = T.levelLabels.slice(0, T.depth + 1);
+  const wb = XLSX.utils.book_new();
+  const mp = [levels.concat(valueCols.map(vLabel))];
+  for (const m of R.matched) { if (!m.code) continue; const n = T.nodes.get(m.code); const p = n.path.slice(); while (p.length < levels.length) p.push(''); mp.push(p.concat(valueCols.map((c) => (m.values[c] == null ? '' : m.values[c])))); }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(mp), 'Microplan');
+  const byRef = new Map(); for (const i of R.issues) for (const r of [i.ref].concat(i.refs || []).filter(Boolean)) { if (!byRef.has(r)) byRef.set(r, new Set()); byRef.get(r).add(i.rule === 'Duplicate phone' ? 'phone used twice' : shortMsg(i)); }
+  if (R.users.length) {
+    const us = [levels.concat(['Name', 'Phone Number', 'Designation', 'Role', 'Check'])];
+    for (const u of R.users) {
+      const p = u.code ? T.nodes.get(u.code).path.slice() : (u.path || []).map((x) => x.name); while (p.length < levels.length) p.push('');
+      us.push(p.slice(0, levels.length).concat([u.person.name, u.phoneNorm.ok ? Number(u.phoneNorm.value) : u.person.phone, u.person.role, u.role, Array.from(byRef.get(u.ref) || []).join('; ') || (u.code ? '' : 'boundary not found')]));
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(us), 'Users');
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Severity', 'Check', 'Detail', 'Where', 'Marked OK']].concat(R.issues.map((i) => [i.severity, i.rule, i.message, i.ref || (i.refs || []).slice(0, 5).join(', '), S.acks.has(PHONE_RULES.includes(i.rule) ? 'Phone numbers' : i.rule) ? 'yes' : '']))), 'Checks');
+  const counts = levels.map((l, i) => { let n = 0; for (const x of T.nodes.values()) if (x.level === i) n++; return [l, n]; });
+  const variants = R.issues.filter((i) => i.rule === 'Near-duplicate names').length;
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Prepared microplan'], ['Source', S.mpName], ['Prepared', new Date().toISOString()], ['Sheets read', [S.cfg.sheet].concat(S.cfg.extra).join(', ')], [],
+    ['Boundary rows', mp.length - 1]].concat(counts.map(([l, n]) => [l, n])).concat([['People', R.users.length], ['People ready', addableUsers().length], [],
+    ['Errors', R.issues.filter((i) => i.severity === 'error').length], ['Warnings', R.issues.filter((i) => i.severity !== 'error').length], ['Spelling variants unified', variants], ['Edits made', S.edits.log.length], [],
+    ['Next step', 'When the console unified template is ready: Microplan Matcher → From microplan → add the template and this file.']])), 'Summary');
+  wb.SheetNames = ['Microplan'].concat(R.users.length ? ['Users'] : [], ['Checks', 'Summary']);
+  saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_prepared.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: XLSX_MIME }));
+}
 function clearAll() {
-  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {}, activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' } });
+  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {}, tpl: null, selfLabels: null, activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' } });
   S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: 'ng', empType: '', skipBadUsers: true };
+  if (isSelf()) { S.tree = selfPlaceholder(); S.facts = selfFacts(); }
 }
 
 // ───────── example: a console-style template and a microplan built in memory ─────────
@@ -2647,7 +2823,9 @@ async function bootExample() {
     clearAll(); S.example = true;
     await loadTemplate(tplBuf instanceof ArrayBuffer ? tplBuf : new Uint8Array(tplBuf).slice().buffer, 'Example_Akko_Unified_Template.xlsx');
     await loadMicroplan(mpBuf, 'Example_Akko_Microplan.xlsx');
-    analyse(); run(); initDemo();
+    initDemo();
+    if (isSelf()) { S.tree = selfPlaceholder(); S.facts = selfFacts(); S.aliases = {}; }
+    analyse(); if (isSelf()) guessPhoneFormat(); run();
   } catch (err) { console.error(err); }
   S.busy = ''; render();
 }
