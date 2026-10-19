@@ -61,12 +61,12 @@ The **Rules** button under the mode tabs sets the checks for every mode, and is 
 
 - **Phone numbers**: presets for Nigeria (10 digits), Sierra Leone (9), Mozambique (9), Burundi (8), Kenya (9), Ethiopia (9) and any 7–15 digits, or a custom length, country code and leading-0 rule. A *Try a number* box shows how a number will be written. The phone selects in each mode use the same setting.
 - **Targets**: lowest and highest allowed target, default 1 to 1,000,000 — the console's own range (`validateTargetFromTargetConfigs` in project-factory), so a 0 on a lowest-level row is reported as *Target out of range*.
-- **Names**: longest person name (default 128, the console user schema), the special characters allowed in boundary names, and the casing used for names in the prepared microplan and boundary list.
+- **Names**: longest person name (default 128, the console user schema), an optional person-name rule (a regular expression, e.g. Sierra Leone UAT's `^[A-Za-z0-9 \-]{2,128}$`, which rejects dots and apostrophes), the special characters allowed in boundary names, and the casing used for names in the prepared microplan and boundary list.
 - **Checks**: every check can be *Must fix*, *Check* or *Off*.
 
 Rules can be loaded from:
 
-- **A console's MDMS**: console address, tenant, optional project type and token. The tool calls `mdms-v2/v2/_search` for `HCM-ADMIN-CONSOLE.schemas` (user schema: phone digits, name length), `HCM-ADMIN-CONSOLE.adminSchema` (target min/max) and `HCM-ADMIN-CONSOLE.targetConfigs` (target columns for the project type). If the browser blocks the call (CORS), it shows a snippet to run in the signed-in console tab (F12 → Console), which copies the same responses, plus a curl command; paste the result back.
+- **A console's MDMS**: console address, tenant (state level: `ng`, `si` for Sierra Leone — a wrong tenant returns `QUERY_EXECUTION_ERROR`), optional project type and token. The tool calls `mdms-v2/v2/_search` for `HCM-ADMIN-CONSOLE.schemas` (current user schema: phone digits and name rule; preferred over the older `adminSchema` `user.all`), `HCM-ADMIN-CONSOLE.adminSchema` and `HCM-ADMIN-CONSOLE.targetConfigs` (target columns and required columns per project type). Targets stay checked at 1–1,000,000, the range the console's upload check applies; schema ranges are shown for reference. If the browser blocks the call (CORS), it shows a snippet to run in the signed-in console tab (F12 → Console), which copies the same responses, plus a curl command; paste the result back.
 - **A file or pasted text**: an MDMS search response (v1 or v2), a rules file exported from this tool, or the DST team's `validation_config.yaml` from [microplan-ingestion](https://github.com/salaudeenn-egov/microplan-ingestion) (severities, allowed special characters, `name_casing`).
 - **Export rules** saves the current set as JSON to share with the team.
 

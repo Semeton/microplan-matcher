@@ -30,6 +30,7 @@
     { rule: 'Phone already in template', sev: 'error', group: 'Users', what: 'Phone already used in the template' },
     { rule: 'Blank name', sev: 'error', group: 'Users', what: 'Person without a name', dst: ['no_missing_entries'] },
     { rule: 'Name too long', sev: 'error', group: 'Users', what: 'Person name longer than the console allows' },
+    { rule: 'Name not allowed', sev: 'error', group: 'Users', what: 'Person name with characters the console’s name rule rejects (from MDMS)' },
     { rule: 'No role', sev: 'error', group: 'Users', what: 'Designation that maps to no console role' },
     { rule: 'User boundary', sev: 'error', group: 'Users', what: 'Person placed at a facility that is not in the microplan', dst: ['boundary_alignment'] },
     { rule: 'HF without OIC', sev: 'warn', group: 'Users', what: 'Health facility with no officer in charge' },
@@ -159,58 +160,82 @@
     const walk = (j) => {
       if (!j) return;
       if (Array.isArray(j)) { j.forEach(walk); return; }
-      if (Array.isArray(j.mdms)) { for (const r of j.mdms) if (r && r.data) out.push({ schemaCode: r.schemaCode || '', id: r.uniqueIdentifier || '', data: r.data, active: r.isActive !== false }); return; }
+      if (Array.isArray(j.mdms)) { for (const r of j.mdms) if (r && r.data) out.push({ schemaCode: r.schemaCode || '', id: r.uniqueIdentifier || '', tenantId: r.tenantId || '', data: r.data, active: r.isActive !== false }); return; }
       if (j.MdmsRes) { for (const [mod, masters] of Object.entries(j.MdmsRes)) for (const [master, list] of Object.entries(masters || {})) for (const d of list || []) out.push({ schemaCode: mod + '.' + master, id: d.title || d.name || d.code || '', data: d, active: true }); return; }
       if (j.properties || j.beneficiaries) out.push({ schemaCode: '', id: j.title || j.name || '', data: j, active: true });
     };
     walk(json);
     return out.filter((r) => r.active);
   }
-  /** Console rules from MDMS: phone digits and name length from the user schema, target range from target columns. */
   /** Server errors inside responses ({Errors:[{code,message}]}), as short text. */
   function mdmsErrors(json) {
     const out = []; const walk = (j) => { if (!j) return; if (Array.isArray(j)) { j.forEach(walk); return; } if (Array.isArray(j.Errors)) for (const e of j.Errors) out.push([e.code, e.message].filter(Boolean).join(': ')); };
     walk(json); return Array.from(new Set(out));
   }
+  /** Phone digits from a schema property: pattern {n} / {a,b}, min/maxLength, or numeric minimum/maximum. */
+  function phoneDigitsOf(ph) {
+    let max = 0, min = 0;
+    if (ph.maximum != null) max = String(Math.trunc(Math.abs(ph.maximum))).length;
+    if (ph.minimum != null) min = String(Math.trunc(Math.abs(ph.minimum))).length;
+    if (ph.maxLength) max = Number(ph.maxLength); if (ph.minLength) min = Number(ph.minLength);
+    const pm = String(ph.pattern || '').match(/\{(\d+)(?:,(\d+))?\}/); if (pm) { min = Number(pm[1]); max = Number(pm[2] || pm[1]); }
+    return { min, max };
+  }
+  const TENANT_PHONE = { si: 'sl', sl: 'sl', ng: 'ng', mz: 'mz', bi: 'bi', ke: 'ke', et: 'et' };
+  /** Console rules from MDMS. The user schema the console uses now (HCM-ADMIN-CONSOLE.schemas → user) gives the phone
+   *  length and the person-name rule; targetConfigs and adminSchema give target columns per project type. The target
+   *  range stays at the console's upload check (1–1,000,000, project-factory validateTargetFromTargetConfigs), which
+   *  does not read the schema's min/max; those are reported only. */
   function fromMdms(json, opts) {
     opts = opts || {};
     const recs = mdmsRecords(json); const patch = {}; const notes = []; const found = [];
     const errs = mdmsErrors(json);
     if (!recs.length) return { patch, notes: [errs.length ? 'The console returned an error instead of rules: ' + errs.join('; ') + '.' + (errs.some((e) => /QUERY_EXECUTION_ERROR/.test(e)) ? ' This usually means the tenant id is wrong for that console (Sierra Leone uses si, not sl).' : '') : 'No MDMS records found in that response.'], found, errors: errs };
     if (errs.length) notes.push('Some searches failed on the console: ' + errs.join('; ') + '.');
-    const isUser = (r) => /(^|\.)user$/i.test(r.id) || /user/i.test(r.data.title || '') || propsOf(r.data).some((x) => /PHONE_NUMBER/i.test(x.name || ''));
-    const user = recs.find((r) => /schemas$/i.test(r.schemaCode) && isUser(r)) || recs.find(isUser);
+    const tenant = (recs.find((r) => r.tenantId) || {}).tenantId || opts.tenant || '';
+    if (tenant) patch.tenant = tenant;
+    const hasPhone = (r) => propsOf(r.data).some((x) => /USER_PHONE_NUMBER(_MICROPLAN)?$/i.test(x.name || ''));
+    const current = recs.find((r) => /\.schemas$/i.test(r.schemaCode) && (/^user$/i.test(r.id) || /^user$/i.test(r.data.title || '')) && hasPhone(r))
+      || recs.find((r) => !r.schemaCode && hasPhone(r));
+    const legacy = recs.find((r) => /adminSchema$/i.test(r.schemaCode) && /^user\.all$/i.test(r.id) && hasPhone(r));
+    const user = current || legacy || recs.find(hasPhone);
     if (user) {
-      found.push('user schema' + (user.id ? ' (' + user.id + ')' : ''));
+      found.push(user === current ? 'user schema' : 'user schema (' + (user.id || 'older layout') + ')');
       const props = propsOf(user.data);
-      const ph = props.find((x) => /PHONE_NUMBER/i.test(x.name || ''));
-      if (ph) {
-        let max = 0, min = 0;
-        if (ph.maximum != null) max = String(Math.trunc(Math.abs(ph.maximum))).length;
-        if (ph.minimum != null) min = String(Math.trunc(Math.abs(ph.minimum))).length;
-        if (ph.maxLength) max = Number(ph.maxLength); if (ph.minLength) min = Number(ph.minLength);
-        const pm = String(ph.pattern || '').match(/\{(\d+)(?:,(\d+))?\}/); if (pm) { min = Number(pm[1]); max = Number(pm[2] || pm[1]); }
-        if (max) {
-          patch.phone = { preset: 'custom', auto: false, label: 'Console', digits: max, alt: [], cc: opts.cc || '', trunk0: true };
-          notes.push(`Phone: ${max} digits, from ${ph.name}` + (min && min !== max ? ` (the schema accepts ${min}–${max}; ${max} is used because the console's length check is exact)` : '') + '.');
-        }
+      const ph = props.find((x) => /USER_PHONE_NUMBER(_MICROPLAN)?$/i.test(x.name || ''));
+      const d = phoneDigitsOf(ph);
+      if (d.max) {
+        const preset = TENANT_PHONE[String(tenant).toLowerCase()];
+        patch.phone = { preset: 'custom', auto: false, label: 'Console', digits: d.max, alt: [], cc: '', trunk0: true, presetHint: preset || '' };
+        notes.push(`Phone: ${d.max} digits (${ph.pattern ? 'pattern ' + ph.pattern : ph.name})` + (d.min && d.min !== d.max ? `; the schema accepts ${d.min}–${d.max}, ${d.max} is used because the console's length check is exact` : '') + '.');
+        if (user === current && legacy) { const l = phoneDigitsOf(propsOf(legacy.data).find((x) => /USER_PHONE_NUMBER$/i.test(x.name || '')) || {}); if (l.max && l.max !== d.max) notes.push(`The older user schema (user.all) still says ${l.max} digits; the current one (${d.max}) is what the console checks on upload.`); }
       }
-      const nm = props.find((x) => /USER_NAME|NAME_OF_(THE_)?PERSON/i.test(x.name || '') && x.maxLength);
-      if (nm) { patch.names = { maxLen: Number(nm.maxLength) }; notes.push(`Person names: up to ${nm.maxLength} characters (${nm.name}).`); }
+      const nm = props.find((x) => /USER_NAME(_MICROPLAN)?$|NAME_OF_(THE_)?PERSON/i.test(x.name || '') && !/PAYEE/i.test(x.name || '') && (x.maxLength || x.pattern));
+      if (nm) {
+        const nd = nm.pattern ? phoneDigitsOf({ pattern: nm.pattern }) : { max: Number(nm.maxLength) || 0 };
+        patch.names = {}; if (nd.max) patch.names.maxLen = nd.max;
+        if (nm.pattern) { patch.names.personPattern = nm.pattern; patch.names.personMessage = nm.errorMessage || ''; notes.push(`Person names must match ${nm.pattern}` + (nm.errorMessage ? ` (“${nm.errorMessage}”)` : '') + '.'); }
+        else notes.push(`Person names: up to ${nd.max} characters.`);
+      }
     }
-    // target min/max: number properties that look like targets
-    const tprops = recs.flatMap((r) => propsOf(r.data)).filter((x) => /TARGET/i.test(x.name || '') && (x.minimum != null || x.maximum != null));
-    if (tprops.length) {
-      const mins = tprops.map((x) => x.minimum).filter((v) => v != null), maxs = tprops.map((x) => x.maximum).filter((v) => v != null);
-      patch.targets = {}; if (mins.length) patch.targets.min = Math.min(...mins); if (maxs.length) patch.targets.max = Math.max(...maxs);
-      notes.push(`Targets: ${patch.targets.min != null ? patch.targets.min : '1'} to ${(patch.targets.max != null ? patch.targets.max : 1000000).toLocaleString('en')} (from ${tprops.length} target column${tprops.length > 1 ? 's' : ''}).`);
-      found.push('target schema');
+    // project types: target columns (targetConfigs) and which are required (adminSchema boundaryWithTarget.<type>)
+    const ptypes = {};
+    for (const r of recs.filter((x) => /targetConfigs$/i.test(x.schemaCode) || Array.isArray(x.data.beneficiaries))) {
+      const name = r.id || r.data.campaignType || '?';
+      ptypes[name] = { columns: Array.from(new Set((r.data.beneficiaries || []).flatMap((b) => (b.columns || []).map((c) => (typeof c === 'string' ? c : c.name || c.code || ''))).filter(Boolean))), required: [], range: null };
     }
-    const tc = recs.filter((r) => /targetConfigs$/i.test(r.schemaCode) || Array.isArray(r.data.beneficiaries));
-    if (tc.length) {
-      const cols = tc.flatMap((r) => (r.data.beneficiaries || []).flatMap((b) => (b.columns || []).map((c) => (typeof c === 'string' ? c : c.name || c.code || '')))).filter(Boolean);
-      found.push('target config' + (tc.length > 1 ? 's' : '') + ' (' + tc.map((r) => r.id || r.data.campaignType || '?').join(', ') + ')');
-      if (cols.length) { patch.targetColumns = Array.from(new Set(cols)); notes.push('Target columns for this project type: ' + patch.targetColumns.join(', ') + '.'); }
+    for (const r of recs.filter((x) => /adminSchema$/i.test(x.schemaCode) && /^boundaryWithTarget\./i.test(x.id))) {
+      const name = r.id.replace(/^boundaryWithTarget\./i, ''); const tp = propsOf(r.data).filter((x) => /TARGET/i.test(x.name || '') && !/_LAT|_LONG/i.test(x.name || ''));
+      const e = ptypes[name] || (ptypes[name] = { columns: tp.map((x) => x.name), required: [], range: null });
+      e.required = tp.filter((x) => x.isRequired).map((x) => x.name);
+      const mins = tp.map((x) => x.minimum).filter((v) => v != null), maxs = tp.map((x) => x.maximum).filter((v) => v != null);
+      if (mins.length || maxs.length) e.range = [mins.length ? Math.min(...mins) : null, maxs.length ? Math.max(...maxs) : null];
+    }
+    if (Object.keys(ptypes).length) {
+      patch.projectTypes = ptypes; found.push(Object.keys(ptypes).length + ' project types');
+      const pick = opts.projectType && ptypes[opts.projectType] ? opts.projectType : Object.keys(ptypes).length === 1 ? Object.keys(ptypes)[0] : '';
+      if (pick) patch.projectType = pick;
+      notes.push(`Project types on this console: ${Object.keys(ptypes).join(', ')}. Targets stay checked at 1 to 1,000,000, the range the console's upload check uses.`);
     }
     if (!found.length) notes.push('The response has MDMS records, but no user schema or target settings in them.');
     return { patch, notes, found };
@@ -221,7 +246,7 @@
     const r = clone(rules || defaults());
     for (const k of ['phone', 'targets', 'names']) if (patch[k]) r[k] = Object.assign({}, k === 'phone' && patch.phone.preset ? {} : r[k], patch[k]);
     if (patch.sev) r.sev = Object.assign({}, r.sev, patch.sev);
-    if (patch.targetColumns) r.targetColumns = patch.targetColumns;
+    for (const k of ['targetColumns', 'projectTypes', 'projectType', 'tenant']) if (patch[k] !== undefined) r[k] = patch[k];
     return r;
   }
   function toFile(rules) {

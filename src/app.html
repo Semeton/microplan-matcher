@@ -520,7 +520,8 @@ function run() {
   const hfLevel = S.tree.levelLabels.findIndex((l) => MP.hierKind(l) === 'hf');
   const valueLabels = a ? Object.fromEntries(a.cols.map((c) => [c.c, c.label])) : {};
   const issues = MP.validate({ tree: S.tree, matched, agg, valueCols, valueLabels, users: users.filter((u) => !u.skipped), hfLevel: hfLevel >= 0 ? hfLevel : null, specialCharsCheck: true,
-    allowedChars: S.rules.names.allowed, maxNameLen: Number(S.rules.names.maxLen) || 0, targetRange: targetRange() });
+    allowedChars: S.rules.names.allowed, maxNameLen: Number(S.rules.names.maxLen) || 0, targetRange: targetRange(),
+    namePattern: S.rules.names.personPattern || '', nameMessage: S.rules.names.personMessage || '' });
   // people already in the template (adding to a filled template): the console rejects a phone used twice
   const have = new Map(S.facts.existingUsers.filter((u) => phoneDigits(u.phone)).map((u) => [phoneDigits(u.phone), u]));
   for (const u of users) if (u.code && !u.role) issues.push({ severity: 'error', rule: 'No role', message: `${u.person.name || 'Person'}: designation “${u.person.role || '(blank)'}” ${isSelf() ? 'does not map to a console role' : 'is not a role in this template'}`, ref: u.ref });
@@ -640,12 +641,16 @@ function viewRules() {
 
   <section class="r-sec"><h3>Targets</h3>
     <div class="r-grid"><label class="field">Lowest target allowed<input type="number" data-rt="min" value="${esc(T.min)}"></label><label class="field">Highest target allowed<input type="number" data-rt="max" value="${esc(T.max)}"></label></div>
-    <div class="small muted">Checked on each lowest-level row after rounding. The console rejects 0 when the lowest is 1.${(R.targetColumns || []).length ? ` Target columns for the project type: ${esc(R.targetColumns.join(', '))}.` : ''}</div>
+    <div class="small muted">Checked on each lowest-level row after rounding. The console rejects 0 when the lowest is 1.</div>
+    ${R.projectTypes && Object.keys(R.projectTypes).length ? (() => { const pt = R.projectType && R.projectTypes[R.projectType]; const short = (c) => esc(String(c).replace(/^HCM_ADMIN_CONSOLE_TARGET_?/, '') || 'TARGET');
+      return `<label class="field">Project type on this console<select data-rptype>${opt('', 'Choose…', R.projectType || '')}${Object.keys(R.projectTypes).map((k) => opt(k, k, R.projectType || '')).join('')}</select></label>`
+        + (pt ? `<div class="small">Target columns: ${pt.columns.map((c) => `<span class="mono">${short(c)}</span>${pt.required.includes(c) ? ' (required)' : ''}`).join(', ') || '—'}${pt.range ? `<br><span class="muted">This project type’s schema says ${fmt(pt.range[0])} to ${fmt(pt.range[1])}; the upload check uses the range above.</span>` : ''}</div>` : ''); })() : ''}
   </section>
 
   <section class="r-sec"><h3>Names</h3>
     <div class="r-grid"><label class="field">Longest person name<input type="number" min="1" data-rn="maxLen" value="${esc(N.maxLen)}"></label>
       <label class="field">Write names in the prepared microplan and boundary list as<select data-rn="casing">${Object.entries(MPR.CASINGS).map(([k, v]) => opt(k, v, N.casing || 'none')).join('')}</select></label></div>
+    <label class="field">Person name rule <span class="muted">(regular expression from the console; blank = length only)</span><input type="text" data-rn="personPattern" value="${esc(N.personPattern || '')}" spellcheck="false" placeholder="e.g. ^[A-Za-z0-9 \\-]{2,128}$"></label>
     <label class="field">Special characters allowed in boundary names (letters and digits always are)<input type="text" data-rn="allowed" value="${esc(N.allowed)}" spellcheck="false"></label>
   </section>
 
@@ -660,12 +665,13 @@ function applyLoaded(res, label) {
   else {
     const patch = res.patch || {};
     if (patch.phone && patch.phone.digits) { // a console length that matches a preset keeps the preset (and its country code)
-      const cur = MP.phoneRule(phoneFmt());
-      const hit = Object.entries(MP.PHONE_PRESETS).find(([k, v]) => k !== 'raw' && v.digits === patch.phone.digits && v.cc === (cur.cc || ''));
+      const cur = MP.phoneRule(phoneFmt()); const hint = patch.phone.presetHint && MP.PHONE_PRESETS[patch.phone.presetHint];
+      const hit = hint && hint.digits === patch.phone.digits ? [patch.phone.presetHint, hint] : Object.entries(MP.PHONE_PRESETS).find(([k, v]) => k !== 'raw' && v.digits === patch.phone.digits && v.cc === (cur.cc || ''));
       patch.phone = hit ? { preset: hit[0], auto: false } : Object.assign(patch.phone, { cc: cur.cc || '' });
     }
     S.rules = MPR.merge(S.rules, patch);
   }
+  { const pt = consoleCfg().ptype; if (pt && S.rules.projectTypes && S.rules.projectTypes[pt] && !S.rules.projectType) S.rules.projectType = pt; }
   S.rules.source = { kind: res.kind, label, at: new Date().toISOString().slice(0, 10) };
   S.rules.notes = res.notes || [];
   S.rulesUi.status = 'Loaded: ' + label; S.rulesUi.paste = false;
@@ -715,7 +721,7 @@ async function fetchRules() {
     if (!done) errs.push(`${code.split('.')[1]}: no MDMS search at this address`);
   }
   if (blocked) { S.rulesUi.status = 'blocked'; S.rulesUi.snippet = devtoolsSnippet(C.tenant, C.ptype); S.rulesUi.curl = curlFor(C.base, C.tenant, C.ptype); renderRules(); return; }
-  const m = MPR.fromMdms(got);
+  const m = MPR.fromMdms(got, { projectType: C.ptype, tenant: C.tenant });
   if (!got.length || !Object.keys(m.patch).length) { S.rulesUi.status = 'No rules came back. ' + errs.concat(m.notes).join(' · ') + ' A QUERY_EXECUTION_ERROR usually means the tenant id is wrong for this console (Sierra Leone uses si). Also check you are signed in.'; renderRules(); return; }
   const host = C.base.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   applyLoaded({ kind: 'mdms', patch: m.patch, notes: m.notes.concat(errs.length ? ['Not loaded: ' + errs.join('; ') + '.'] : []) }, `${host} · ${C.tenant}${C.ptype ? ' · ' + C.ptype : ''}`);
@@ -758,7 +764,12 @@ $('rulesDlg').addEventListener('change', async (e) => {
   if (t.dataset.rphone !== undefined) { R.phone = t.value === 'custom' ? Object.assign({ label: 'Custom', alt: [], trunk0: true }, MP.phoneRule(phoneFmt()), { preset: 'custom', auto: false, label: 'Custom' }) : { preset: t.value, auto: false }; mark(); afterRules(); return; }
   if (t.dataset.rp) { R.phone = Object.assign({}, R.phone, { [t.dataset.rp]: t.type === 'checkbox' ? t.checked : t.dataset.rp === 'digits' ? Number(t.value) || 0 : t.value.replace(/\D/g, '') }); mark(); afterRules(); return; }
   if (t.dataset.rt) { R.targets = Object.assign({}, R.targets, { [t.dataset.rt]: t.value === '' ? '' : Number(t.value) }); mark(); afterRules(); return; }
-  if (t.dataset.rn) { R.names = Object.assign({}, R.names, { [t.dataset.rn]: t.dataset.rn === 'maxLen' ? Number(t.value) || 0 : t.value }); mark(); afterRules(); return; }
+  if (t.dataset.rn) {
+    if (t.dataset.rn === 'personPattern' && t.value.trim()) { try { new RegExp(t.value.trim()); } catch (err) { toast('That is not a valid pattern'); return; } }
+    R.names = Object.assign({}, R.names, { [t.dataset.rn]: t.dataset.rn === 'maxLen' ? Number(t.value) || 0 : t.dataset.rn === 'personPattern' ? t.value.trim() : t.value });
+    if (t.dataset.rn === 'personPattern') R.names.personMessage = ''; mark(); afterRules(); return;
+  }
+  if (t.dataset.rptype !== undefined) { R.projectType = t.value; afterRules(); return; }
   if (t.dataset.rsev) { R.sev = Object.assign({}, R.sev, { [t.dataset.rsev]: t.value }); mark(); afterRules(); return; }
 });
 $('rulesDlg').addEventListener('input', (e) => {
@@ -1247,11 +1258,13 @@ function shortMsg(i) {
   if (i.rule === 'Incomplete path') return 'parent level blank';
   if (i.rule === 'Target out of range') return 'target out of range';
   if (i.rule === 'Name too long') return 'name too long';
+  if (i.rule === 'Name not allowed') return 'name has characters the console rejects';
   return i.rule;
 }
 const HINT = {
   'Target out of range': 'Type a target the console accepts, or remove the row if no one is to be reached there.',
   'Name too long': 'Shorten the person\'s name.',
+  'Name not allowed': 'Rewrite the name with the characters the console accepts (for example drop dots and apostrophes: “Alh. Musa” → “Alh Musa”).',
   'Phone numbers': 'Correct the number in the row, or remove the person.',
   'User boundary': 'Fix the facility name so it matches the boundary list, or resolve it in Resolve names.',
   'Blank name': 'Type the person\'s name, or remove the row.',

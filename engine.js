@@ -632,6 +632,7 @@
     const allowed = ctx.allowedChars != null ? ctx.allowedChars : " -/().,'&";
     const badName = (nm) => Array.from(String(nm)).some((ch) => !/[A-Za-z0-9]/.test(ch) && !allowed.includes(ch));
     const range = ctx.targetRange || null; const maxNameLen = ctx.maxNameLen || 0;
+    let nameRe = null; if (ctx.namePattern) { try { nameRe = new RegExp(ctx.namePattern); } catch (e) { nameRe = null; } }
     const issues = [];
     const add = (severity, rule, message, ref) => issues.push({ severity, rule, message, ref: ref || '' });
 
@@ -741,6 +742,7 @@
       for (const u of users) {
         const ref = u.sheet + '!' + u.row;
         if (!u.person.name) add('error', 'Blank name', 'User row without a name', ref);
+        else if (nameRe && !nameRe.test(String(u.person.name).trim())) add('error', 'Name not allowed', `“${String(u.person.name).trim().slice(0, 60)}”: ${ctx.nameMessage || 'does not match the console name rule ' + ctx.namePattern}`, ref);
         else if (maxNameLen && String(u.person.name).trim().length > maxNameLen) add('error', 'Name too long', `${String(u.person.name).slice(0, 40)}… has ${String(u.person.name).trim().length} characters; the console allows ${maxNameLen}`, ref);
         if (!u.phoneNorm.ok) add('error', 'Phone', (u.person.phone || '(blank)') + ' — ' + u.phoneNorm.reason, ref);
         else { const p = u.phoneNorm.value; if (phones.has(p)) { add('error', 'Duplicate phone', p + ' also used at ' + phones.get(p), ref); issues[issues.length - 1].refs = [phones.get(p), ref]; } else phones.set(p, ref); }
