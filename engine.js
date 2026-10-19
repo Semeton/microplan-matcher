@@ -658,7 +658,28 @@
     if (agg) {
       const refOf = new Map(); for (const m of matched) if (m.code && m.values && Object.keys(m.values).length && !refOf.has(m.code)) refOf.set(m.code, m.sheet + '!' + m.row);
       for (const c of agg.conflicts) { add('error', 'Duplicate rows', 'Two microplan rows resolve to the same boundary ' + label(tree, c.code) + ' — values were summed', c.rows[1]); issues[issues.length - 1].refs = c.rows.slice(); }
-      for (const t of agg.twoLevel.slice(0, 200)) { add('error', 'Targets at two levels', 'Targets given for ' + label(tree, t.child) + ' and also for its ancestor ' + label(tree, t.ancestor) + ' — totals will double count', refOf.get(t.child)); issues[issues.length - 1].refs = [refOf.get(t.ancestor), refOf.get(t.child)].filter(Boolean); }
+      // one finding per place that has targets on itself AND on places below it
+      const byAnc = new Map();
+      for (const t of agg.twoLevel) { if (!byAnc.has(t.ancestor)) byAnc.set(t.ancestor, []); byAnc.get(t.ancestor).push(t.child); }
+      const rowNo = (ref) => Number(String(ref || '').split('!').pop()) || 0;
+      for (const [anc, kids] of Array.from(byAnc).slice(0, 200)) {
+        const an = tree.nodes.get(anc); const aRef = refOf.get(anc); const kRefs = kids.map((k) => refOf.get(k)).filter(Boolean);
+        const below = tree.levelLabels[an.level + 1] || 'level below';
+        const firstKid = Math.min(...kRefs.map(rowNo));
+        // compare the parent row's value with what its children add up to (first target column)
+        const vc = valueCols[0]; const recOf = (code) => matched.find((m) => m.code === code && m.values && m.values[vc] != null);
+        const aVal = vc != null && recOf(anc) ? recOf(anc).values[vc] : null;
+        const kSum = vc != null ? kids.reduce((t, k) => t + ((recOf(k) || { values: {} }).values[vc] || 0), 0) : null;
+        const isTotal = aVal != null && kSum && Math.abs(aVal - kSum) <= Math.max(1, kSum * 0.01);
+        const nums = aVal != null && kSum != null ? ` (${Math.round(aVal * 100) / 100} on this row; the ${below} rows under it add up to ${Math.round(kSum * 100) / 100})` : '';
+        if (aRef && !isTotal && (rowNo(aRef) > firstKid || aVal != null)) {
+          // the row sits among its children: almost always a child row whose name was left blank
+          add('error', 'Missing name', `Row ${rowNo(aRef)} has targets but no ${below} name${nums}. It sits under ${label(tree, anc)}, so its targets would be counted for ${an.name} itself`, aRef);
+        } else {
+          add('error', 'Targets at two levels', `${label(tree, anc)} has targets on its own row and ${kids.length === 1 ? 'one ' + below + ' under it also has targets' : kids.length + ' ' + below + ' rows under it also have targets'}${isTotal ? ' — the row looks like their total' : ''}${nums}. The console would count both`, aRef || kRefs[0]);
+          issues[issues.length - 1].refs = [aRef].concat(kRefs.slice(0, 20)).filter(Boolean);
+        }
+      }
       // facility totals parked on one child (MC master-data convention: target on the first community)
       const byParent = new Map();
       for (const code of agg.direct.keys()) { const n = tree.nodes.get(code); if (!n || !n.parent) continue; byParent.set(n.parent, (byParent.get(n.parent) || 0) + 1); }

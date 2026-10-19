@@ -35,7 +35,7 @@ async function until(fn, ms = 60000) { const t = Date.now(); while (Date.now() -
 const txt = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '(none)');
 const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Error('missing ' + sel); el.click(); };
 (async () => {
-  await until(() => /Example_Akko_Microplan/.test(d.getElementById('view').textContent));
+  await until(() => /Example_Akko_Microplan/.test(d.getElementById('view').textContent) && !d.querySelector('.file.loading'));
   console.log('[1 Files]', txt(d.querySelector('.files')), '|', txt(d.querySelector('.example')));
   click('[data-nav="2"]');
   console.log('[2 Columns]', txt(d.querySelector('.facts')));
@@ -99,7 +99,7 @@ const click = (sel) => { const el = d.querySelector(sel); if (!el) throw new Err
     console.log('   verify', suffix, rep.ok ? 'OK' : 'FAIL', `users ${rep.users} | facilities ${JSON.stringify(rep.facilities)}`, rep.ok ? '' : JSON.stringify(rep));
     if (!rep.ok) process.exit(1);
   }
-  const setFile = async (sel, name, u8) => { const inp = d.querySelector(sel); const f = new w.File([u8], name); Object.defineProperty(inp, 'files', { value: [f], configurable: true }); fire(inp); await wait(300); };
+  const setFile = async (sel, name, u8) => { const inp = d.querySelector(sel); const f = new w.File([u8], name); Object.defineProperty(inp, 'files', { value: [f], configurable: true }); fire(inp); await wait(50); await until(() => !d.querySelector('.file.loading'), 120000); await wait(100); };
   const rowF = (n, f) => d.querySelector(`[data-af="${n}|${f}"]`);
 
   // add users to the empty example template: one typed, three pasted (one bad boundary, one repeated phone)
