@@ -351,7 +351,8 @@ function guessPhoneFormat() {
 function selfTargets(a) {
   const ok = (c) => c.numeric && !c.kind && !/%|ratio|number of|count of|no\.? of|\blat\b|latitude|longitude|\blng\b|adjusted|weighted|\bsum of\b/i.test(c.label);
   // columns labelled “target” win; otherwise population / children / bednet columns
-  let cols = a.cols.filter((c) => ok(c) && /target/i.test(c.label));
+  // ITN microplans also carry nets / households / bales per row, which ITN templates take as targets
+  let cols = a.cols.filter((c) => ok(c) && (/target/i.test(c.label) || /\bitns?\b|bednet|\bnets?\b|household|\bbales?\b/i.test(c.label)));
   if (!cols.length) cols = a.cols.filter((c) => ok(c) && /population|children|month|total|eligible|bednet|\bnets?\b|household/i.test(c.label));
   S.facts.targetKeys = cols.map((c) => ({ key: 'C' + c.c, label: c.label.replace(/\s+/g, ' ').trim(), sheet: a.sheet, mandatory: false }));
   S.cfg.targetMap = Object.fromEntries(cols.map((c) => ['C' + c.c, c.c]));

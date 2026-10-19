@@ -297,10 +297,10 @@
     ['chiefdom', /\bchiefdom\b/],
     ['ward', /\bwards?\b/],
     ['hf', /health ?facilit|\bhf\b|\bphu\b|facility name|name of (the )?(health )?facility|\bclinic\b/],
-    ['dp', /distribution point/],
+    ['dp', /distribution (point|hub)s?|\bdh\b|\bdp\b/],
     ['community', /communit|settlement|village|hamlet|locality|\bcatchment\b(?! settlements)/],
   ];
-  const NOT_HIER = /number|count|no\.|total|target|population|%|dhis|\bid\b|code|uid|latitude|longitude|gps|phone|difficult|nomadic|riverine|idp|terrain|migrant|summary|\bform\b|booklet|sheets?\b|register|tally|card/;
+  const NOT_HIER = /number|count|no\.|total|target|population|%|dhis|\bid\b|code|uid|latitude|longitude|gps|phone|difficult|nomadic|riverine|idp|terrain|migrant|summary|\bform\b|booklet|sheets?\b|register|tally|card|required|needed|quantity|\bper\b|\bitns?\b|bednets?|household|\bbales?\b/;
 
   function hierKind(label) {
     const l = basicNorm(label);
@@ -514,6 +514,9 @@
       if (!m.code) continue;
       const hasVals = valueCols.some((c) => m.values && m.values[c] !== undefined && m.values[c] !== null);
       if (!hasVals) continue;
+      // header rows for a parent (a hub or facility listed above its communities) often carry 0s from formulas: not targets
+      const node = tree.nodes.get(m.code);
+      if (node && node.children && node.children.length && valueCols.every((c) => !m.values[c])) continue;
       const prevRow = seen.get(m.code);
       if (prevRow) conflicts.push({ code: m.code, rows: [prevRow, m.sheet + '!' + m.row] });
       seen.set(m.code, m.sheet + '!' + m.row);
@@ -876,7 +879,7 @@
     const levelMap = {}, levelLabels = [];
     cols.forEach((c, i) => {
       levelMap[c.c] = i;
-      let lab = KIND_LABEL[c.kind] || '';
+      let lab = c.kind === 'dp' && /hub|\bdh\b/i.test(c.label) ? 'Distribution Hub' : KIND_LABEL[c.kind] || '';
       if (!lab) { const raw = c.label.replace(/\s+/g, ' ').trim(); lab = raw && raw.length < 30 && !/^column [a-z]+$/i.test(raw) ? raw : 'Level ' + (i + 1); }
       while (levelLabels.includes(lab)) lab += ' (2)';
       levelLabels.push(lab);
