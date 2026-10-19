@@ -1871,9 +1871,12 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
   // ───────── console MDMS ─────────
   const MDMS_SCHEMAS = ['HCM-ADMIN-CONSOLE.schemas', 'HCM-ADMIN-CONSOLE.adminSchema', 'HCM-ADMIN-CONSOLE.targetConfigs'];
   /** MDMS v2 search request (the same call project-factory makes). */
-  function mdmsRequest(base, tenantId, schemaCode, ids, token, path) {
+  /** paging: send limit+offset together (some MDMS v2 builds fail with a limit and no offset); false sends neither,
+   *  exactly like project-factory. */
+  function mdmsRequest(base, tenantId, schemaCode, ids, token, path, paging) {
     const url = String(base || '').replace(/\/+$/, '') + (path || '/mdms-v2/v2/_search');
-    const MdmsCriteria = { tenantId, schemaCode, limit: 200 };
+    const MdmsCriteria = { tenantId, schemaCode };
+    if (paging !== false) Object.assign(MdmsCriteria, { limit: 100, offset: 0 });
     if (ids && ids.length) MdmsCriteria.uniqueIdentifiers = ids;
     return { url, body: { MdmsCriteria, RequestInfo: { apiId: 'Rainmaker', msgId: Date.now() + '|en_NG', authToken: token || undefined } } };
   }
@@ -1900,10 +1903,17 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
     return out.filter((r) => r.active);
   }
   /** Console rules from MDMS: phone digits and name length from the user schema, target range from target columns. */
+  /** Server errors inside responses ({Errors:[{code,message}]}), as short text. */
+  function mdmsErrors(json) {
+    const out = []; const walk = (j) => { if (!j) return; if (Array.isArray(j)) { j.forEach(walk); return; } if (Array.isArray(j.Errors)) for (const e of j.Errors) out.push([e.code, e.message].filter(Boolean).join(': ')); };
+    walk(json); return Array.from(new Set(out));
+  }
   function fromMdms(json, opts) {
     opts = opts || {};
     const recs = mdmsRecords(json); const patch = {}; const notes = []; const found = [];
-    if (!recs.length) return { patch, notes: ['No MDMS records found in that response.'], found };
+    const errs = mdmsErrors(json);
+    if (!recs.length) return { patch, notes: [errs.length ? 'The console returned an error instead of rules: ' + errs.join('; ') + '.' : 'No MDMS records found in that response.'], found, errors: errs };
+    if (errs.length) notes.push('Some searches failed on the console: ' + errs.join('; ') + '.');
     const isUser = (r) => /(^|\.)user$/i.test(r.id) || /user/i.test(r.data.title || '') || propsOf(r.data).some((x) => /PHONE_NUMBER/i.test(x.name || ''));
     const user = recs.find((r) => /schemas$/i.test(r.schemaCode) && isUser(r)) || recs.find(isUser);
     if (user) {
@@ -1966,7 +1976,7 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
     throw new Error('Not a rules file, an MDMS response or a validation_config.yaml' + (name ? ' (' + name + ')' : '') + '.');
   }
 
-  const api = { DEFAULT_ALLOWED, CASINGS, CATALOG, SEV, MDMS_SCHEMAS, defaults, sevOf, grade, badChars, applyCasing, parseYaml, fromDstYaml, mdmsRequest, mdmsRecords, fromMdms, merge, toFile, fromText };
+  const api = { DEFAULT_ALLOWED, CASINGS, CATALOG, SEV, MDMS_SCHEMAS, defaults, sevOf, grade, badChars, applyCasing, parseYaml, fromDstYaml, mdmsRequest, mdmsRecords, mdmsErrors, fromMdms, merge, toFile, fromText };
   root.MPR = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -2383,13 +2393,16 @@ function applyLoaded(res, label) {
 function devtoolsSnippet(tenant, ptype) {
   const jobs = [['HCM-ADMIN-CONSOLE.schemas', ['user']], ['HCM-ADMIN-CONSOLE.adminSchema', null], ['HCM-ADMIN-CONSOLE.targetConfigs', ptype ? [ptype] : null]];
   return `(async () => { const tok = (window.Digit && Digit.UserService && Digit.UserService.getUser() || {}).access_token || localStorage.getItem('token') || ''; const out = [];
-  for (const [schemaCode, ids] of ${JSON.stringify(jobs)}) { const MdmsCriteria = { tenantId: ${JSON.stringify(tenant)}, schemaCode, limit: 200 }; if (ids) MdmsCriteria.uniqueIdentifiers = ids;
-    const r = await fetch('/mdms-v2/v2/_search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ MdmsCriteria, RequestInfo: { apiId: 'Rainmaker', authToken: tok } }) }); out.push(await r.json()); }
+  for (const [schemaCode, ids] of ${JSON.stringify(jobs)}) { let j;
+    for (const paging of [true, false]) { const MdmsCriteria = { tenantId: ${JSON.stringify(tenant)}, schemaCode }; if (ids) MdmsCriteria.uniqueIdentifiers = ids; if (paging) Object.assign(MdmsCriteria, { limit: 100, offset: 0 });
+      const r = await fetch('/mdms-v2/v2/_search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ MdmsCriteria, RequestInfo: { apiId: 'Rainmaker', authToken: tok } }) });
+      j = await r.json().catch(() => ({ Errors: [{ code: 'HTTP_' + r.status }] })); if (!j.Errors) break; }
+    console.log(schemaCode, j.Errors ? 'failed: ' + JSON.stringify(j.Errors[0]) : (j.mdms || []).length + ' records'); out.push(j); }
   copy(JSON.stringify(out)); console.log('Rules copied. Paste them into Microplan Matcher.'); })();`;
 }
 function curlFor(base, tenant, ptype) {
-  const q = MPR.mdmsRequest(base, tenant, 'HCM-ADMIN-CONSOLE.schemas', ['user'], '<token>');
-  return `curl -s -X POST '${q.url}' -H 'Content-Type: application/json' -d '${JSON.stringify(q.body)}'` + (ptype ? `\n\ncurl -s -X POST '${q.url}' -H 'Content-Type: application/json' -d '${JSON.stringify(MPR.mdmsRequest(base, tenant, 'HCM-ADMIN-CONSOLE.targetConfigs', [ptype], '<token>').body)}'` : '');
+  const q = MPR.mdmsRequest(base, tenant, 'HCM-ADMIN-CONSOLE.schemas', ['user'], '<token>', null, false);
+  return `curl -s -X POST '${q.url}' -H 'Content-Type: application/json' -d '${JSON.stringify(q.body)}'` + (ptype ? `\n\ncurl -s -X POST '${q.url}' -H 'Content-Type: application/json' -d '${JSON.stringify(MPR.mdmsRequest(base, tenant, 'HCM-ADMIN-CONSOLE.targetConfigs', [ptype], '<token>', null, false).body)}'` : '');
 }
 async function fetchRules() {
   const C = consoleCfg(); const token = ($('rToken') || {}).value || '';
@@ -2401,20 +2414,26 @@ async function fetchRules() {
   for (const [code, ids] of jobs) {
     let done = false;
     for (const path of ['/mdms-v2/v2/_search', '/egov-mdms-service/v2/_search']) {
-      const q = MPR.mdmsRequest(C.base, C.tenant, code, ids, token, path);
-      try {
-        const r = await fetch(q.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(q.body) });
-        if (r.status === 404) continue;
-        if (!r.ok) { errs.push(`${code.split('.')[1]}: HTTP ${r.status}${r.status === 401 || r.status === 403 ? ' (needs a token)' : ''}`); done = true; break; }
-        got.push(await r.json()); done = true; break;
-      } catch (e) { blocked = true; break; }
+      let notFound = false;
+      for (const paging of [true, false]) {
+        const q = MPR.mdmsRequest(C.base, C.tenant, code, ids, token, path, paging);
+        try {
+          const r = await fetch(q.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(q.body) });
+          if (r.status === 404) { notFound = true; break; }
+          const j = await r.json().catch(() => null);
+          if (j && j.Errors && paging) continue; // retry without paging, as the console backend sends it
+          if (!r.ok && !(j && j.Errors)) { errs.push(`${code.split('.')[1]}: HTTP ${r.status}${r.status === 401 || r.status === 403 ? ' (needs a token)' : ''}`); done = true; break; }
+          got.push(j || {}); done = true; break;
+        } catch (e) { blocked = true; break; }
+      }
+      if (blocked || done) break; if (notFound) continue;
     }
     if (blocked) break;
     if (!done) errs.push(`${code.split('.')[1]}: no MDMS search at this address`);
   }
   if (blocked) { S.rulesUi.status = 'blocked'; S.rulesUi.snippet = devtoolsSnippet(C.tenant, C.ptype); S.rulesUi.curl = curlFor(C.base, C.tenant, C.ptype); renderRules(); return; }
   const m = MPR.fromMdms(got);
-  if (!got.length || !Object.keys(m.patch).length) { S.rulesUi.status = 'No rules came back. ' + errs.concat(m.notes).join(' · '); renderRules(); return; }
+  if (!got.length || !Object.keys(m.patch).length) { S.rulesUi.status = 'No rules came back. ' + errs.concat(m.notes).join(' · ') + ' Check the tenant (state level, e.g. ng or sl) and that you are signed in.'; renderRules(); return; }
   const host = C.base.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   applyLoaded({ kind: 'mdms', patch: m.patch, notes: m.notes.concat(errs.length ? ['Not loaded: ' + errs.join('; ') + '.'] : []) }, `${host} · ${C.tenant}${C.ptype ? ' · ' + C.ptype : ''}`);
 }
@@ -2434,7 +2453,9 @@ $('rulesDlg').addEventListener('click', async (e) => {
   if (t.id === 'rReset') { S.rules = MPR.defaults(); S.rulesUi.status = ''; afterRules(); toast('Rules reset to console defaults'); return; }
   if (t.id === 'rApplyPaste') {
     const txt = $('rPaste').value; if (!txt.trim()) return;
-    try { const res = MPR.fromText(txt); applyLoaded(res, res.kind === 'dst' ? 'DST validation_config.yaml' : res.kind === 'file' ? 'Rules file' : 'Pasted MDMS response'); }
+    try { const res = MPR.fromText(txt);
+      if (res.kind === 'mdms' && !Object.keys(res.patch || {}).length) { S.rulesUi.status = res.notes.join(' ') + ' Run the snippet again (it now retries without paging), or check the tenant.'; S.rulesUi.paste = true; renderRules(); return; }
+      applyLoaded(res, res.kind === 'dst' ? 'DST validation_config.yaml' : res.kind === 'file' ? 'Rules file' : 'Pasted MDMS response'); }
     catch (err) { S.rulesUi.status = err.message; S.rulesUi.paste = true; renderRules(); }
     return;
   }
