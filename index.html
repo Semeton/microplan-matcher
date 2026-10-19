@@ -120,6 +120,7 @@ button.choice.alt .nm { font-weight: 400; }
 .rc-head > button { margin-left: auto; padding: 2px 6px; }
 .rc-ref { font-family: var(--f-mono); font-size: 0.76rem; color: var(--faint); }
 .rc-problem { color: var(--err); font-size: 0.84rem; }
+.dup-row { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 6px; }
 .rc-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .rc-fields label, .rc-fields > div { display: grid; gap: 3px; min-width: 0; }
 .rc-label { font-size: 0.74rem; color: var(--muted); }
@@ -1765,7 +1766,7 @@ function guessPhoneFormat() {
 }
 /** Numeric columns that look like targets become the "target" columns when there is no template to say which. */
 function selfTargets(a) {
-  const ok = (c) => c.numeric && !c.kind && !/%|ratio|number of|count of|no\.? of|\blat\b|latitude|longitude|\blng\b|adjusted|weighted|\bsum of\b/i.test(c.label);
+  const ok = (c) => c.numeric && !c.kind && !/%|ratio|(number|count|no\.?) of (?!households?)|\blat\b|latitude|longitude|\blng\b|adjusted|weighted|\bsum of\b/i.test(c.label);
   // columns labelled “target” win; otherwise population / children / bednet columns
   // ITN microplans also carry nets / households / bales per row, which ITN templates take as targets
   let cols = a.cols.filter((c) => ok(c) && (/target/i.test(c.label) || /\bitns?\b|bednet|\bnets?\b|household|\bbales?\b/i.test(c.label)));
@@ -2406,6 +2407,9 @@ function issueGroup(g) {
   const fixOpen = g.sev === 'error' || !!S.open['fix:' + key];
   if (!fixOpen && (first.variants || first.codes || g.list.some((i) => i.ref || i.refs))) {
     actions += `<button type="button" class="quiet" data-toggle="fix:${esc(key)}">${first.codes ? 'Add people' : first.variants ? 'Edit names' : 'Fix rows'}</button>`;
+  } else if (g.rule === 'Duplicate rows') {
+    body = dupGrid(g.list, showAll);
+    if (g.list.length > ROWS_SHOWN / 2) actions += `<button type="button" class="quiet" data-toggle="${esc(key)}">${showAll ? 'Show fewer' : 'Show all ' + fmt(g.list.length)}</button>`;
   } else if (first.variants) {
     const vs = g.rule === 'Near-duplicate names' ? g.list : [first];
     body = renameGrid(vs, showAll);
@@ -2444,9 +2448,31 @@ function gridCols(sheet, rule) {
   const vals = Array.from(new Set(Object.values(S.cfg.targetMap).filter((v) => v !== '' && v != null).map(Number)));
   return hcols.slice(-3).map((c) => ({ c, label: label(c), kind: 'h' })).concat(sheet === S.cfg.sheet ? vals.map((c) => ({ c, label: label(c), kind: 'n' })) : []);
 }
+/** One card per duplicated place: both rows side by side, so it is clear which two rows clash and what each holds. */
+function dupGrid(issues, showAll) {
+  const shown = showAll ? issues : issues.slice(0, ROWS_SHOWN / 2);
+  return `<div class="rowcards">${shown.map((i) => {
+    const refs = Array.from(new Set(i.refs || [i.ref])).sort((x, y) => parseRef(x).ri - parseRef(y).ri);
+    const { sheet } = parseRef(refs[0]); const cols = gridCols(sheet, 'Duplicate rows');
+    const hs = cols.filter((c) => c.kind === 'h'), ns = cols.filter((c) => c.kind === 'n');
+    const leaf = hs[hs.length - 1], parents = hs.slice(0, -1);
+    const r0 = parseRef(refs[0]).ri;
+    const where = parents.map((c) => cellAt(sheet, r0, c.c)).filter(Boolean).join(' › ');
+    const sums = ns.map((c) => refs.reduce((t, r) => t + (Number(cellAt(sheet, parseRef(r).ri, c.c)) || 0), 0));
+    return `<div class="rowcard"><div class="rc-head"><span><b style="font-weight:500">“${esc(leaf ? cellAt(sheet, r0, leaf.c) : '')}”</b> appears ${refs.length === 2 ? 'twice' : refs.length + ' times'}${where ? ` under ${esc(where)}` : ''}</span></div>
+      <div class="small muted">If left as is, their targets are added together${ns.length ? ` (${esc(shortLabel(ns[0].label))}: ${refs.map((r) => numText(cellAt(sheet, parseRef(r).ri, ns[0].c))).join(' + ')} = ${numText(sums[0])})` : ''}. Remove the extra row, or rename one if they are different places.</div>
+      ${refs.map((ref) => { const ri = parseRef(ref).ri; return `<div class="dup-row"><div class="rc-head"><span class="rc-ref">Row ${esc(String(ri + 1))}</span><button type="button" class="quiet" data-rm="${esc(ref)}">Remove this row</button></div>
+        <div class="rc-fields">${leaf ? `<label><span class="rc-label">${esc(leaf.label)}</span><input type="text" data-cell="${esc(sheet)}|${ri}|${leaf.c}|h" value="${esc(cellAt(sheet, ri, leaf.c))}" aria-label="${esc(leaf.label)}, row ${ri + 1}"></label>` : ''}
+        ${ns.map((c) => `<label title="${esc(c.label)}"><span class="rc-label">${esc(shortLabel(c.label))}</span><input type="text" inputmode="numeric" data-cell="${esc(sheet)}|${ri}|${c.c}|n" value="${esc(numText(cellAt(sheet, ri, c.c)))}" aria-label="${esc(c.label)}, row ${ri + 1}"></label>`).join('')}</div></div>`; }).join('')}
+      </div>`; }).join('')}</div>`;
+}
+/** Long microplan headers ("Target population to reach perDP against the boundaryn in column H 3-<12 months") → a short form. */
+function shortLabel(l) { const t = String(l || '').replace(/\s+/g, ' ').trim(); if (t.length <= 28) return t; const m = t.match(/\d+\s*-\s*<?\s*\d+\s*(months|meses|years)/i); let head = t.replace(m ? m[0] : '', '').split(/ against | per | to reach /i)[0].trim(); if (head.length > 26) head = head.slice(0, 24) + '…'; return head + (m ? ' ' + m[0] : ''); }
+/** Show long decimals (population ÷ 1.8) rounded to 2 places; edits still keep whatever is typed. */
+function numText(v) { const n = Number(String(v).replace(/,/g, '')); return v === '' || v == null || !isFinite(n) ? String(v == null ? '' : v) : Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100); }
 function rowGrid(refs, rule, showAll) {
   const shown = showAll ? refs : refs.slice(0, ROWS_SHOWN);
-  const fieldInput = (sheet, ri, c, ref) => `<label><span class="rc-label">${esc(c.label)}</span><input type="text" data-cell="${esc(sheet)}|${ri}|${c.c}|${c.kind}" value="${esc(cellAt(sheet, ri, c.c))}" aria-label="${esc(c.label)}, ${esc(ref)}"${c.kind === 'n' ? ' inputmode="numeric"' : c.kind === 'p' ? ' inputmode="tel"' : ''}></label>`;
+  const fieldInput = (sheet, ri, c, ref) => `<label><span class="rc-label">${esc(c.label)}</span><input type="text" data-cell="${esc(sheet)}|${ri}|${c.c}|${c.kind}" value="${esc(c.kind === 'n' ? numText(cellAt(sheet, ri, c.c)) : cellAt(sheet, ri, c.c))}" aria-label="${esc(c.label)}, ${esc(ref)}"${c.kind === 'n' ? ' inputmode="numeric"' : c.kind === 'p' ? ' inputmode="tel"' : ''}></label>`;
   const cards = shown.map((ref) => {
     const { sheet, ri } = parseRef(ref); const cols = gridCols(sheet, rule);
     const msgs = Array.from(new Set(S._rowMsgs.get(ref) || []));
