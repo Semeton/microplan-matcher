@@ -1416,11 +1416,11 @@ function saveBoundaries() {
 }
 function savePrepared() {
   const R = S.res, T = S.tree; const a = A(S.cfg.sheet);
-  const valueCols = R.valueCols; const vLabel = (c) => ((a && a.cols[c]) || {}).label || 'Value';
+  const valueCols = R.valueCols; const vLabel = (c) => String(((a && a.cols[c]) || {}).label || 'Value').replace(/_x000d_/gi, ' ').replace(/\s+/g, ' ').trim();
   const levels = T.levelLabels.slice(0, T.depth + 1);
   const wb = XLSX.utils.book_new();
   const mp = [levels.concat(valueCols.map(vLabel))];
-  for (const m of R.matched) { if (!m.code) continue; const n = T.nodes.get(m.code); const p = n.path.slice(); while (p.length < levels.length) p.push(''); mp.push(p.concat(valueCols.map((c) => wholeNum(m.values[c])))); }
+  for (const m of R.matched) { if (!m.code) continue; const n = T.nodes.get(m.code); if (n.children.length && valueCols.every((c) => !Number(m.values[c]))) continue; const p = n.path.slice(); while (p.length < levels.length) p.push(''); mp.push(p.concat(valueCols.map((c) => wholeNum(m.values[c])))); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(mp), 'Microplan');
   { const B = boundaryTable(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([B.levels].concat(B.rows)), 'Boundaries'); }
   const byRef = new Map(); for (const i of R.issues) for (const r of [i.ref].concat(i.refs || []).filter(Boolean)) { if (!byRef.has(r)) byRef.set(r, new Set()); byRef.get(r).add(i.rule === 'Duplicate phone' ? 'phone used twice' : shortMsg(i)); }
