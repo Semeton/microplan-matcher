@@ -135,9 +135,12 @@
   // ───────── console MDMS ─────────
   const MDMS_SCHEMAS = ['HCM-ADMIN-CONSOLE.schemas', 'HCM-ADMIN-CONSOLE.adminSchema', 'HCM-ADMIN-CONSOLE.targetConfigs'];
   /** MDMS v2 search request (the same call project-factory makes). */
-  function mdmsRequest(base, tenantId, schemaCode, ids, token, path) {
+  /** paging: send limit+offset together (some MDMS v2 builds fail with a limit and no offset); false sends neither,
+   *  exactly like project-factory. */
+  function mdmsRequest(base, tenantId, schemaCode, ids, token, path, paging) {
     const url = String(base || '').replace(/\/+$/, '') + (path || '/mdms-v2/v2/_search');
-    const MdmsCriteria = { tenantId, schemaCode, limit: 200 };
+    const MdmsCriteria = { tenantId, schemaCode };
+    if (paging !== false) Object.assign(MdmsCriteria, { limit: 100, offset: 0 });
     if (ids && ids.length) MdmsCriteria.uniqueIdentifiers = ids;
     return { url, body: { MdmsCriteria, RequestInfo: { apiId: 'Rainmaker', msgId: Date.now() + '|en_NG', authToken: token || undefined } } };
   }
@@ -164,10 +167,17 @@
     return out.filter((r) => r.active);
   }
   /** Console rules from MDMS: phone digits and name length from the user schema, target range from target columns. */
+  /** Server errors inside responses ({Errors:[{code,message}]}), as short text. */
+  function mdmsErrors(json) {
+    const out = []; const walk = (j) => { if (!j) return; if (Array.isArray(j)) { j.forEach(walk); return; } if (Array.isArray(j.Errors)) for (const e of j.Errors) out.push([e.code, e.message].filter(Boolean).join(': ')); };
+    walk(json); return Array.from(new Set(out));
+  }
   function fromMdms(json, opts) {
     opts = opts || {};
     const recs = mdmsRecords(json); const patch = {}; const notes = []; const found = [];
-    if (!recs.length) return { patch, notes: ['No MDMS records found in that response.'], found };
+    const errs = mdmsErrors(json);
+    if (!recs.length) return { patch, notes: [errs.length ? 'The console returned an error instead of rules: ' + errs.join('; ') + '.' : 'No MDMS records found in that response.'], found, errors: errs };
+    if (errs.length) notes.push('Some searches failed on the console: ' + errs.join('; ') + '.');
     const isUser = (r) => /(^|\.)user$/i.test(r.id) || /user/i.test(r.data.title || '') || propsOf(r.data).some((x) => /PHONE_NUMBER/i.test(x.name || ''));
     const user = recs.find((r) => /schemas$/i.test(r.schemaCode) && isUser(r)) || recs.find(isUser);
     if (user) {
@@ -230,7 +240,7 @@
     throw new Error('Not a rules file, an MDMS response or a validation_config.yaml' + (name ? ' (' + name + ')' : '') + '.');
   }
 
-  const api = { DEFAULT_ALLOWED, CASINGS, CATALOG, SEV, MDMS_SCHEMAS, defaults, sevOf, grade, badChars, applyCasing, parseYaml, fromDstYaml, mdmsRequest, mdmsRecords, fromMdms, merge, toFile, fromText };
+  const api = { DEFAULT_ALLOWED, CASINGS, CATALOG, SEV, MDMS_SCHEMAS, defaults, sevOf, grade, badChars, applyCasing, parseYaml, fromDstYaml, mdmsRequest, mdmsRecords, mdmsErrors, fromMdms, merge, toFile, fromText };
   root.MPR = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);
