@@ -8,15 +8,18 @@
   --bg: #f6f7f6; --surface: #ffffff; --ink: #18201d; --muted: #66726d; --faint: #9aa59f; --line: #e3e7e4; --hover: #f0f3f1;
   --accent: #0b6e5f; --accent-ink: #ffffff; --accent-soft: #e3f1ed;
   --ok: #1d7a45; --warn: #a35d00; --err: #b42318;
+  --warn-soft: #fdf6ea; --err-soft: #fdf1f0; --ok-soft: #eef7f2; --card-shadow: 0 1px 2px rgba(16, 24, 20, 0.06);
   --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #111614; --surface: #171e1b; --ink: #e6ece9; --muted: #98a59f; --faint: #66736d; --line: #26302c; --hover: #1d2622;
-  --accent: #45bca4; --accent-ink: #06150f; --accent-soft: #163029; --ok: #5cc68b; --warn: #e4a647; --err: #f27a6c; color-scheme: dark; } }
+  --accent: #45bca4; --accent-ink: #06150f; --accent-soft: #163029; --ok: #5cc68b; --warn: #e4a647; --err: #f27a6c; color-scheme: dark;
+  --warn-soft: #2a2416; --err-soft: #2d1b19; --ok-soft: #16261e; --card-shadow: none; } }
 :root[data-theme="dark"] {
   --bg: #111614; --surface: #171e1b; --ink: #e6ece9; --muted: #98a59f; --faint: #66736d; --line: #26302c; --hover: #1d2622;
-  --accent: #45bca4; --accent-ink: #06150f; --accent-soft: #163029; --ok: #5cc68b; --warn: #e4a647; --err: #f27a6c; color-scheme: dark; }
+  --accent: #45bca4; --accent-ink: #06150f; --accent-soft: #163029; --ok: #5cc68b; --warn: #e4a647; --err: #f27a6c; color-scheme: dark;
+  --warn-soft: #2a2416; --err-soft: #2d1b19; --ok-soft: #16261e; --card-shadow: none; }
 
 * { box-sizing: border-box; }
 body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.55; }
@@ -120,6 +123,26 @@ button.choice.alt .nm { font-weight: 400; }
 .rc-head > button { margin-left: auto; padding: 2px 6px; }
 .rc-ref { font-family: var(--f-mono); font-size: 0.76rem; color: var(--faint); }
 .rc-problem { color: var(--err); font-size: 0.84rem; }
+/* checks: each check is its own tinted card; red = must fix, amber = worth a look */
+.facts.issues { border-top: 0; display: grid; gap: 12px; }
+.fact.issue { border: 1px solid var(--line); border-left: 4px solid var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 14px 16px 12px; }
+.fact.issue.err { border-left-color: var(--err); background: var(--err-soft); }
+.fact.issue.ok { border-left-color: var(--accent); background: var(--ok-soft); }
+.fact.issue > .t > .ttl { font-weight: 600; }
+.fact.issue .rowcard { background: var(--surface); box-shadow: var(--card-shadow); }
+.sev-tag { display: inline-block; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; padding: 1px 7px; border-radius: 10px; margin-left: 6px; vertical-align: 1px; }
+.sev-tag.err { background: var(--err); color: var(--surface); } .sev-tag.warn { background: var(--warn); color: var(--surface); }
+/* loading */
+.loadbar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; position: relative; margin-top: 6px; }
+.loadbar > span { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.25s ease; }
+.loadbar.indet > span { width: 35% !important; position: absolute; animation: indet 1.1s ease-in-out infinite; }
+@keyframes indet { 0% { left: -35%; } 100% { left: 100%; } }
+.file.loading { border-style: solid; border-color: var(--accent); background: var(--hover); cursor: progress; }
+.file.loading .txt { flex: 1; }
+.file.failed { border-style: solid; border-color: var(--err); }
+.file.failed .meta { color: var(--err); }
+.working { display: grid; gap: 4px; }
+@media (prefers-reduced-motion: reduce) { .loadbar.indet > span { animation: none; left: 0; width: 100% !important; opacity: 0.5; } }
 .dup-row { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 6px; }
 .rc-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .rc-fields label, .rc-fields > div { display: grid; gap: 3px; min-width: 0; }
@@ -857,7 +880,28 @@ footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
     if (agg) {
       const refOf = new Map(); for (const m of matched) if (m.code && m.values && Object.keys(m.values).length && !refOf.has(m.code)) refOf.set(m.code, m.sheet + '!' + m.row);
       for (const c of agg.conflicts) { add('error', 'Duplicate rows', 'Two microplan rows resolve to the same boundary ' + label(tree, c.code) + ' — values were summed', c.rows[1]); issues[issues.length - 1].refs = c.rows.slice(); }
-      for (const t of agg.twoLevel.slice(0, 200)) { add('error', 'Targets at two levels', 'Targets given for ' + label(tree, t.child) + ' and also for its ancestor ' + label(tree, t.ancestor) + ' — totals will double count', refOf.get(t.child)); issues[issues.length - 1].refs = [refOf.get(t.ancestor), refOf.get(t.child)].filter(Boolean); }
+      // one finding per place that has targets on itself AND on places below it
+      const byAnc = new Map();
+      for (const t of agg.twoLevel) { if (!byAnc.has(t.ancestor)) byAnc.set(t.ancestor, []); byAnc.get(t.ancestor).push(t.child); }
+      const rowNo = (ref) => Number(String(ref || '').split('!').pop()) || 0;
+      for (const [anc, kids] of Array.from(byAnc).slice(0, 200)) {
+        const an = tree.nodes.get(anc); const aRef = refOf.get(anc); const kRefs = kids.map((k) => refOf.get(k)).filter(Boolean);
+        const below = tree.levelLabels[an.level + 1] || 'level below';
+        const firstKid = Math.min(...kRefs.map(rowNo));
+        // compare the parent row's value with what its children add up to (first target column)
+        const vc = valueCols[0]; const recOf = (code) => matched.find((m) => m.code === code && m.values && m.values[vc] != null);
+        const aVal = vc != null && recOf(anc) ? recOf(anc).values[vc] : null;
+        const kSum = vc != null ? kids.reduce((t, k) => t + ((recOf(k) || { values: {} }).values[vc] || 0), 0) : null;
+        const isTotal = aVal != null && kSum && Math.abs(aVal - kSum) <= Math.max(1, kSum * 0.01);
+        const nums = aVal != null && kSum != null ? ` (${Math.round(aVal * 100) / 100} on this row; the ${below} rows under it add up to ${Math.round(kSum * 100) / 100})` : '';
+        if (aRef && !isTotal && (rowNo(aRef) > firstKid || aVal != null)) {
+          // the row sits among its children: almost always a child row whose name was left blank
+          add('error', 'Missing name', `Row ${rowNo(aRef)} has targets but no ${below} name${nums}. It sits under ${label(tree, anc)}, so its targets would be counted for ${an.name} itself`, aRef);
+        } else {
+          add('error', 'Targets at two levels', `${label(tree, anc)} has targets on its own row and ${kids.length === 1 ? 'one ' + below + ' under it also has targets' : kids.length + ' ' + below + ' rows under it also have targets'}${isTotal ? ' — the row looks like their total' : ''}${nums}. The console would count both`, aRef || kRefs[0]);
+          issues[issues.length - 1].refs = [aRef].concat(kRefs.slice(0, 20)).filter(Boolean);
+        }
+      }
       // facility totals parked on one child (MC master-data convention: target on the first community)
       const byParent = new Map();
       for (const code of agg.direct.keys()) { const n = tree.nodes.get(code); if (!n || !n.parent) continue; byParent.set(n.parent, (byParent.get(n.parent) || 0) + 1); }
@@ -1628,6 +1672,14 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** Let the browser draw (the loading bar) before the next heavy step. */
+const paint = () => new Promise((r) => (window.requestAnimationFrame ? requestAnimationFrame(() => setTimeout(r, 0)) : setTimeout(r, 0)));
+/** Read a file with progress (0–1) for the upload bar. */
+function readFile(f, onPct) {
+  return new Promise((res, rej) => { const fr = new FileReader(); fr.onprogress = (e) => { if (e.lengthComputable && onPct) onPct(e.loaded / e.total); }; fr.onload = () => { if (onPct) onPct(1); res(fr.result); }; fr.onerror = () => rej(fr.error || new Error('The file could not be read')); fr.readAsArrayBuffer(f); });
+}
+/** Show an animated working bar in a status line while a file is written. */
+function working(el, label) { if (el) el.innerHTML = `<span class="working">${esc(label)}<span class="loadbar indet"><span></span></span></span>`; }
 const pluralWord = (w) => (/[^aeiou]y$/i.test(w) ? w.slice(0, -1) + 'ies' : /(s|x|ch|sh)$/i.test(w) ? w + 'es' : w + 's');
 const plural = (n, w, p) => `${fmt(n)} ${n === 1 ? w : (p || pluralWord(w))}`;
 
@@ -1958,7 +2010,7 @@ function viewDemo() {
   return h;
 }
 async function demoFill(btn) {
-  btn.disabled = true; $('demoStatus').textContent = 'Writing the template…'; await tick();
+  btn.disabled = true; working($('demoStatus'), 'Writing the template…'); await paint();
   try {
     const users = MP.demoUsers(S.tree, demoPlan());
     const log = await writeTemplate({ users: users.map((u) => ({ code: u.code, name: u.name, phone: MP.normPhone(u.phone, S.cfg.phoneFmt).value || u.phone, roles: u.roles })), employmentType: S.demo.empType, activate: activation(S.demo.activate, users.map((u) => u.code)), demoTargets: !!S.demo.targets }, 'demo_users');
@@ -2133,7 +2185,7 @@ function parsePaste(text) {
   return lines.map((l) => (tab ? l.split('\t') : l.split(',')).map((x) => x.trim()));
 }
 async function addSave(btn) {
-  btn.disabled = true; $('addStatus').textContent = 'Writing the template…'; await tick();
+  btn.disabled = true; working($('addStatus'), 'Writing the template…'); await paint();
   try {
     const C = addChecks();
     const users = C.good.map((r) => ({ code: r.code, name: r.name.trim(), phone: r.phoneOut, roles: r.roles.filter(Boolean) }));
@@ -2146,6 +2198,12 @@ async function addSave(btn) {
 
 // ───────── 1 · files ─────────
 function fileBox(id, accept, loaded, name, meta, prompt, ic) {
+  const L = S.loading && S.loading.id === id ? S.loading : null;
+  if (L && !L.error) return `<div class="file loading" id="drop-${id}" role="status" aria-live="polite"><span class="ic">${ic}</span>
+    <span class="txt"><span class="name">${esc(L.name)}</span><span class="meta">${esc(L.label)}${L.pct != null ? ` · ${Math.round(L.pct)}%` : ''}</span>
+    <span class="loadbar${L.pct == null ? ' indet' : ''}"><span style="width:${L.pct || 0}%"></span></span></span></div>`;
+  if (L && L.error) return `<label class="file failed" id="drop-${id}"><input type="file" id="${id}" accept="${accept}"><span class="ic">${ic}</span>
+    <span class="txt"><span class="name">${esc(L.name)}</span><span class="meta">${esc(L.error)}</span></span><span class="act">Try another file</span></label>`;
   return `<label class="file${loaded ? ' loaded' : ''}" id="drop-${id}">
     <input type="file" id="${id}" accept="${accept}">
     <span class="ic">${ic}</span>
@@ -2360,7 +2418,8 @@ function viewExport() {
     <div class="choices" style="margin-top:4px;gap:2px">${unmapped.length ? '<button type="button" class="quiet" data-nav="2">Map columns</button>' : ''}${rows > filled && !S.cfg.liftSingle ? '<button type="button" class="quiet" data-act="spread">Spread parent totals</button>' : ''}</div></div></div>` : '';
   return `<div class="intro"><h2>${headline}</h2><p class="muted small">${lines.join(' · ')}</p></div>
     ${mandBox ? `<div class="facts">${mandBox}</div>` : ''}
-    ${active.length || lifted || editsBox ? `<div class="facts">${editsBox}${lifted}${active.map(issueGroup).join('')}</div>` : ''}
+    ${lifted || editsBox ? `<div class="facts">${editsBox}${lifted}</div>` : ''}
+    ${active.length ? `<div class="facts issues">${active.map(issueGroup).join('')}</div>` : ''}
     ${acked.length ? `<details class="edit"><summary>${plural(acked.length, 'check')} marked as OK</summary><div class="facts">${acked.map((g) => `<div class="fact"><span class="mark ok">✓</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span><div class="d"><button type="button" class="quiet" data-unack="${esc(g.rule)}">Undo</button></div></div></div>`).join('')}</div></details>` : ''}
     ${S.facts.facilityCount ? `<div class="settings">${activationField('selAct', S.activate, usedCodes(), 'Facilities to mark Active', 'In the microplan’s area')}</div>` : ''}
     <p class="muted small">${isSelf() ? 'The prepared microplan has one clean sheet of boundaries and targets (spellings unified, per-LGA sheets merged, header and total rows removed), a Users sheet with phones and console roles, and the checks. When the console’s unified template is ready, open From microplan with the template and this file.' : 'Edits change this run and the corrected microplan, never your original file. Only target cells, new user rows and facility status are written to the template; hidden helper columns and dropdowns stay as the console made them.'}</p>
@@ -2380,7 +2439,8 @@ function shortMsg(i) {
   if (i.rule === 'Blank name') return 'no name';
   if (i.rule === 'Bad number') return i.message;
   if (i.rule === 'Duplicate rows') return 'same boundary as another row';
-  if (i.rule === 'Targets at two levels') return 'targets at two levels';
+  if (i.rule === 'Targets at two levels') return 'targets on this row and on rows under it';
+  if (i.rule === 'Missing name') return 'name missing';
   if (i.rule === 'Incomplete path') return 'parent level blank';
   return i.rule;
 }
@@ -2390,7 +2450,8 @@ const HINT = {
   'Blank name': 'Type the person\'s name, or remove the row.',
   'No role': 'Correct the designation (e.g. CDD, OIC), choose a role for it under Check columns, or remove the person. People without a role are left out.',
   'Duplicate rows': 'Two rows point at the same boundary and were added together. Fix the name in one, or remove it.',
-  'Targets at two levels': 'Clear the targets on one of the two rows so they are counted once.',
+  'Targets at two levels': 'Keep targets on one level only: clear them on the parent row, or on the rows under it.',
+  'Missing name': 'Type the missing name in the row, or remove the row if it should not be there.',
   'Bad number': 'Correct the value.',
   'Incomplete path': 'Fill the blank parent level.',
   'Near-duplicate names': 'Pick one spelling. The change applies to every row that uses the name.',
@@ -2430,7 +2491,7 @@ function issueGroup(g) {
   }
   actions += `<button type="button" class="quiet" data-ack="${esc(key)}">${g.rule === 'Targets on one child per parent' ? 'Keep as given' : g.sev === 'error' ? 'Ignore this check' : 'Mark as OK'}</button>`;
   const detail = g.rule === 'Phone numbers' ? `${plural(g.list.length, 'user')} with a missing, invalid or repeated number` + (g.list.some((i) => i.rule === 'Phone already in template') ? ', or one already used in the template' : '') : first.codes ? esc(first.message.split(', e.g.')[0]) : first.variants && g.rule === 'Special characters' ? esc(first.message.split(' (e.g.')[0]) : g.list.length > 1 ? '' : esc(first.message);
-  return `<div class="fact"><span class="mark ${sev}">!</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length > 1 ? g.list.length : (first.codes || first.variants || [0]).length)}</span>
+  return `<div class="fact issue ${sev}"><span class="mark ${sev}">!</span><div class="t"><span class="ttl">${esc(g.rule)}</span> <span class="muted">· ${fmt(g.list.length > 1 ? g.list.length : (first.codes || first.variants || [0]).length)}</span><span class="sev-tag ${sev}">${sev === 'err' ? 'Must fix' : 'Check'}</span>
     ${detail ? `<div class="d">${detail}</div>` : ''}${HINT[g.rule] ? `<div class="d">${esc(HINT[g.rule])}</div>` : ''}
     ${body}<div class="choices" style="margin-top:6px;gap:2px">${actions}</div></div></div>`;
 }
@@ -2592,7 +2653,7 @@ view.addEventListener('click', async (e) => {
   if (t.id === 'dFill') { demoFill(t); return; }
   if (t.id === 'dList') { demoCsv(); return; }
   if (t.id === 'btnFill') { fillAndSave(t); return; }
-  if (t.id === 'btnPrep') { savePrepared(); return; }
+  if (t.id === 'btnPrep') { working($('expStatus'), 'Preparing the microplan…'); await paint(); savePrepared(); $('expStatus').textContent = 'Prepared microplan downloaded.'; return; }
   if (t.id === 'btnReport') { saveReport(); return; }
 });
 view.addEventListener('toggle', (e) => { if (e.target.id === 'exBox') S.open.__ex = e.target.open; if (e.target.id === 'editMap') S._editOpen = e.target.open; if (e.target.id === 'autoBox') { S.showAuto = e.target.open; e.target.querySelector('summary').textContent = (S.showAuto ? 'Hide ' : 'Review ') + plural(S._auto.length, 'close match', 'close matches'); } }, true);
@@ -2603,9 +2664,14 @@ view.addEventListener('change', async (e) => {
   if (t.id === 'fileTpl' || t.id === 'fileMp') {
     const f = t.files[0]; if (!f) return;
     if (S.example) clearAll();
-    S.busy = `Reading ${f.name}…`; render(); await tick();
-    try { const buf = await f.arrayBuffer(); if (t.id === 'fileTpl') { await loadTemplate(buf, f.name); initDemo(); S.demoMsg = ''; if (S.facts.existingUsers.length && S.mode === 'plan') toast(`${plural(S.facts.existingUsers.length, 'user')} already in this template; new ones are added after them`); } else await loadMicroplan(buf, f.name); if (ready()) { analyse(); if (isSelf()) guessPhoneFormat(); run(); } S.busy = ''; }
-    catch (err) { console.error(err); S.busy = `Could not read ${f.name}. ${err && err.message ? err.message : ''}`; }
+    const step = async (label, pct) => { S.loading = { id: t.id, name: f.name, label, pct }; render(); await paint(); };
+    S.busy = '';
+    try { await step('Uploading', 0); const buf = await readFile(f, (p) => { S.loading.pct = p * 40; const el = document.querySelector('#drop-' + t.id + ' .loadbar > span'); if (el) el.style.width = S.loading.pct + '%'; const m = document.querySelector('#drop-' + t.id + ' .meta'); if (m) m.textContent = 'Uploading · ' + Math.round(S.loading.pct) + '%'; });
+      await step(t.id === 'fileTpl' ? 'Reading the template' : 'Reading the sheets', 50);
+      if (t.id === 'fileTpl') { await loadTemplate(buf, f.name); await step('Reading roles, users and facilities', 75); initDemo(); S.demoMsg = ''; if (S.facts.existingUsers.length && S.mode === 'plan') toast(`${plural(S.facts.existingUsers.length, 'user')} already in this template; new ones are added after them`); } else await loadMicroplan(buf, f.name);
+      if (ready()) { await step('Finding the columns', 80); analyse(); if (isSelf()) guessPhoneFormat(); await step(isSelf() ? 'Checking every row' : 'Matching names to the template', 90); run(); }
+      S.loading = null; toast(`${f.name} is ready`); }
+    catch (err) { console.error(err); S.loading = { id: t.id, name: f.name, error: `Could not read this file. ${err && err.message ? err.message : 'Is it an .xlsx workbook?'}` }; }
     render(); return;
   }
   if (t.id === 'impAlias' && t.files[0]) {
@@ -2693,7 +2759,7 @@ function descendants(code, level) {
 }
 
 async function fillAndSave(btn) {
-  btn.disabled = true; $('expStatus').textContent = 'Writing the template…'; await tick();
+  btn.disabled = true; working($('expStatus'), 'Writing the template…'); await paint();
   try {
     const R = S.res;
     const users = addableUsers().map((u) => ({ code: u.code, name: u.person.name, phone: u.phoneNorm.ok ? u.phoneNorm.value : u.person.phone, role: u.role }));
@@ -2765,7 +2831,7 @@ function savePrepared() {
   saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_prepared.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: XLSX_MIME }));
 }
 function clearAll() {
-  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {}, tpl: null, selfLabels: null, activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' } });
+  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {}, loading: null, tpl: null, selfLabels: null, activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' } });
   S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: 'ng', empType: '', skipBadUsers: true };
   if (isSelf()) { S.tree = selfPlaceholder(); S.facts = selfFacts(); }
 }
@@ -2847,7 +2913,7 @@ async function buildExample() {
   return { tplBuf, mpBuf: XLSX.write(mwb, { type: 'array', bookType: 'xlsx' }) };
 }
 async function bootExample() {
-  S.busy = 'Loading example…'; render();
+  S.loading = { id: 'fileMp', name: 'Example_Akko_Microplan.xlsx', label: 'Loading example data', pct: null }; render(); await paint();
   try {
     const { tplBuf, mpBuf } = await buildExample();
     clearAll(); S.example = true;
@@ -2857,7 +2923,7 @@ async function bootExample() {
     if (isSelf()) { S.tree = selfPlaceholder(); S.facts = selfFacts(); S.aliases = {}; }
     analyse(); if (isSelf()) guessPhoneFormat(); run();
   } catch (err) { console.error(err); }
-  S.busy = ''; render();
+  S.loading = null; render();
 }
 window.__mpm = { state: () => S }; // read-only hook for the test harness
 render();
