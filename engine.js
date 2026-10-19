@@ -578,42 +578,60 @@
   }
 
   // ───────────────────────── phones ─────────────────────────
-  /** Phones are written to the template as numbers, so the value is the national number without its leading 0:
-   *  'ng' Nigeria 10 digits (8031234567; 11-digit numbers without a leading 0 are kept as given), 'sl' Sierra Leone
-   *  9 digits (761234567), 'raw' any 7–15 digits. Only the digit count is checked, not network prefixes. */
+  /** Phones are written to the template as numbers, so the value is the national number without its trunk 0.
+   *  A rule is { digits, alt: [other accepted lengths], cc: country code to strip, trunk0: drop a leading 0 }.
+   *  Presets match the console's PHONE_NUMBER_LENGTH per country; only the digit count is checked, not network prefixes.
+   *  Nigeria also keeps 11-digit numbers without a leading 0 as given (older lists). */
+  const PHONE_PRESETS = {
+    ng: { label: 'Nigeria', digits: 10, alt: [11], cc: '234', trunk0: true },
+    sl: { label: 'Sierra Leone', digits: 9, alt: [], cc: '232', trunk0: true },
+    mz: { label: 'Mozambique', digits: 9, alt: [], cc: '258', trunk0: true },
+    bi: { label: 'Burundi', digits: 8, alt: [], cc: '257', trunk0: true },
+    ke: { label: 'Kenya', digits: 9, alt: [], cc: '254', trunk0: true },
+    et: { label: 'Ethiopia', digits: 9, alt: [], cc: '251', trunk0: true },
+    raw: { label: 'Any', digits: 0, min: 7, max: 15, alt: [], cc: '', trunk0: true },
+  };
   const PHONE_ALIAS = { '11': 'ng', '10': 'ng', intl: 'ng', 'sl-intl': 'sl' };
   const PHONE_FORMATS = { ng: 'Nigeria', sl: 'Sierra Leone', raw: '' };
   function phoneCountry(tree) {
     const r = tree && tree.nodes.get(tree.roots[0]); const t = r ? (r.code + ' ' + r.path[0] + ' ' + r.name).toUpperCase() : '';
     if (/SIERRA|SIERRALEONE|_SI\b|\bSL\b/.test(t)) return 'sl';
     if (/NIGERIA|_NI\b|\bNG\b|\bNI\b/.test(t)) return 'ng';
+    if (/MOZAMBI|MOÇAMBI|\bMZ\b/.test(t)) return 'mz';
+    if (/BURUNDI|\bBI\b/.test(t)) return 'bi';
     return 'raw';
   }
+  function phoneRule(fmt) {
+    if (fmt && typeof fmt === 'object') return fmt;
+    return PHONE_PRESETS[PHONE_ALIAS[fmt] || fmt] || PHONE_PRESETS.raw;
+  }
   function normPhone(raw, fmt) {
-    fmt = PHONE_ALIAS[fmt] || fmt;
+    const R = phoneRule(fmt);
     let d = cellStr(raw).replace(/\.0+$/, '').replace(/\D/g, '');
     if (!d) return { ok: false, value: '', reason: 'blank' };
-    if (fmt === 'sl') {
-      if (d.startsWith('232') && d.length === 12) d = d.slice(3);
-      d = d.replace(/^0+(?=\d{9}$)/, '');
-      const ok = d.length === 9 && !d.startsWith('0');
-      return { ok, value: d, reason: ok ? '' : `should have 9 digits after any leading 0 (has ${d.replace(/^0+/, '').length})` };
-    }
-    if (fmt === 'ng') {
-      if (d.startsWith('234') && d.length === 13) d = d.slice(3);
-      if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
-      const ok = (d.length === 10 || d.length === 11) && !d.startsWith('0');
-      return { ok, value: d, reason: ok ? '' : `should have 10 digits after the leading 0 (has ${d.replace(/^0/, '').length})` };
-    }
-    d = d.replace(/^0+/, '');
-    const ok = d.length >= 7 && d.length <= 15;
-    return { ok, value: d, reason: ok ? '' : `should have 7–15 digits (has ${d.length})` };
+    const n = Number(R.digits) || 0;
+    if (R.cc && d.startsWith(R.cc) && (n ? d.length === R.cc.length + n : d.length - R.cc.length >= (R.min || 7))) d = d.slice(R.cc.length);
+    if (R.trunk0 !== false) d = n ? d.replace(new RegExp('^0+(?=\\d{' + n + '}$)'), '') : d.replace(/^0+/, '');
+    if (!n) { const ok = d.length >= (R.min || 7) && d.length <= (R.max || 15); return { ok, value: d, reason: ok ? '' : `should have ${R.min || 7}–${R.max || 15} digits (has ${d.length})` }; }
+    const lens = [n].concat(R.alt || []);
+    const ok = lens.includes(d.length) && (R.trunk0 === false || !d.startsWith('0'));
+    const has = d.replace(/^0+/, '').length;
+    return { ok, value: d, reason: ok ? '' : `should have ${n} digits${R.trunk0 !== false ? ' after the leading 0' : ''} (has ${has})` };
+  }
+  /** "Nigeria · 10 digits" */
+  function describePhone(fmt) {
+    const R = phoneRule(fmt);
+    return (R.label && R.label !== 'Custom' ? R.label + ' · ' : '') + (R.digits ? R.digits + ' digits' : (R.min || 7) + '–' + (R.max || 15) + ' digits') + (R.cc ? ' (+' + R.cc + ')' : '');
   }
 
 
   // ───────────────────────── validation ─────────────────────────
   function validate(ctx) {
     const { tree, matched, agg, valueCols, valueLabels, users, specialCharsCheck } = ctx;
+    // console limits (rules): allowed special characters, target range, person-name length
+    const allowed = ctx.allowedChars != null ? ctx.allowedChars : " -/().,'&";
+    const badName = (nm) => Array.from(String(nm)).some((ch) => !/[A-Za-z0-9]/.test(ch) && !allowed.includes(ch));
+    const range = ctx.targetRange || null; const maxNameLen = ctx.maxNameLen || 0;
     const issues = [];
     const add = (severity, rule, message, ref) => issues.push({ severity, rule, message, ref: ref || '' });
 
@@ -644,7 +662,7 @@
 
     if (specialCharsCheck) {
       const bad = new Map();
-      for (const m of matched) for (const p of m.path || []) if (/[^A-Za-z0-9 \-\/().,'&]/.test(p.name)) {
+      for (const m of matched) for (const p of m.path || []) if (badName(p.name)) {
         if (!bad.has(p.name + '|' + p.level)) bad.set(p.name + '|' + p.level, { name: p.name, level: p.level, ref: m.sheet + '!' + m.row, count: 0 });
         bad.get(p.name + '|' + p.level).count++;
       }
@@ -694,7 +712,24 @@
       const decimals = { n: 0, eg: null };
       for (const m of matched) {
         if (!m.values) continue;
-        for (const c of valueCols) { const v = m.values[c]; if (v === undefined || v === null) continue; if (v < 0) add('error', 'Bad number', (valueLabels[c] || 'col ' + c) + ' = ' + v + ' (negative)', m.sheet + '!' + m.row); else if (!Number.isInteger(v)) { decimals.n++; if (!decimals.eg) decimals.eg = v; } }
+        const node = m.code ? tree.nodes.get(m.code) : null; const leafRow = node && !(node.children && node.children.length); const outOfRange = [];
+        for (const c of valueCols) {
+          const v = m.values[c]; if (v === undefined || v === null) continue;
+          if (v < 0) add('error', 'Bad number', (valueLabels[c] || 'col ' + c) + ' = ' + v + ' (negative)', m.sheet + '!' + m.row);
+          else {
+            if (!Number.isInteger(v)) { decimals.n++; if (!decimals.eg) decimals.eg = v; }
+            // the console rejects targets outside its range (default 1–1,000,000), so a 0 on a lowest-level row fails upload
+            const r = Math.round(v);
+            if (range && leafRow && (r < range.min || r > range.max)) outOfRange.push([c, r]);
+          }
+        }
+        if (outOfRange.length) {
+          const tidy = (l) => { const t = String(l || '').replace(/_x000d_/gi, ' ').replace(/\s+/g, ' ').trim(); return t.length > 48 ? t.slice(0, 46) + '…' : t; };
+          const same = outOfRange.every(([, r]) => r === outOfRange[0][1]);
+          const what = same && outOfRange.length > 1 ? `${outOfRange.length === valueCols.length ? 'All' : outOfRange.length} target columns are ${outOfRange[0][1].toLocaleString('en')}` : outOfRange.map(([c, r]) => `${tidy(valueLabels[c] || 'col ' + c)} is ${r.toLocaleString('en')}`).join('; ');
+          add('error', 'Target out of range', `${what}; the console accepts ${range.min.toLocaleString('en')} to ${range.max.toLocaleString('en')}`, m.sheet + '!' + m.row);
+          issues[issues.length - 1].count = 1;
+        }
       }
       if (decimals.n) { add('warn', 'Decimal targets', `${decimals.n.toLocaleString('en')} target values are decimals (e.g. ${Math.round(decimals.eg * 1000) / 1000}); they are rounded to whole numbers when written`); issues[issues.length - 1].count = decimals.n; }
     }
@@ -706,6 +741,7 @@
       for (const u of users) {
         const ref = u.sheet + '!' + u.row;
         if (!u.person.name) add('error', 'Blank name', 'User row without a name', ref);
+        else if (maxNameLen && String(u.person.name).trim().length > maxNameLen) add('error', 'Name too long', `${String(u.person.name).slice(0, 40)}… has ${String(u.person.name).trim().length} characters; the console allows ${maxNameLen}`, ref);
         if (!u.phoneNorm.ok) add('error', 'Phone', (u.person.phone || '(blank)') + ' — ' + u.phoneNorm.reason, ref);
         else { const p = u.phoneNorm.value; if (phones.has(p)) { add('error', 'Duplicate phone', p + ' also used at ' + phones.get(p), ref); issues[issues.length - 1].refs = [phones.get(p), ref]; } else phones.set(p, ref); }
         if (!u.code) add('error', 'User boundary', 'User boundary not matched: ' + (u.path || []).map((p) => p.name).join(' › '), ref);
@@ -975,7 +1011,7 @@
     return issues;
   }
 
-  root.MP = { STANDARD_ROLES, GENERIC_LEVELS, selfLevels, selfTree, microplanChecks, PHONE_FORMATS, phoneCountry, nameFromCode, isHelperHash, prettyLevels, defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
+  root.MP = { STANDARD_ROLES, GENERIC_LEVELS, selfLevels, selfTree, microplanChecks, PHONE_FORMATS, PHONE_PRESETS, phoneRule, describePhone, phoneCountry, nameFromCode, isHelperHash, prettyLevels, defaultRoleLevel, spreadPick, demoUsers, nextPhone, autoLevelMap, suggestValueCols, basicNorm, canon, variants, similarity, parseTemplate, analyseSheet, extractRecords, matchRecords, aggregate,
     valueFor, normPhone, validate, label, helpersFor, sha256hex, colLetter, aliasKey, hierKind, cellStr, toNum };
   if (typeof module !== 'undefined') module.exports = root.MP;
 })(typeof window !== 'undefined' ? window : globalThis);

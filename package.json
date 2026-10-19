@@ -4,7 +4,7 @@
   "description": "Match a microplan to DIGIT HCM boundary codes and fill the console unified template.",
   "scripts": {
     "build": "node build.js",
-    "test": "node test/run_demo.js && node test/run_page.js dist/index.html"
+    "test": "node test/run_rules.js && node test/run_demo.js && node test/run_page.js dist/index.html"
   },
   "license": "ISC",
   "devDependencies": {

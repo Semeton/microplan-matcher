@@ -3,6 +3,7 @@ const fs = require('fs');
 let body = fs.readFileSync('src/app.html', 'utf8');
 body = body.replace('/*__ENGINE__*/', () => fs.readFileSync('engine.js', 'utf8'))
            .replace('/*__WRITER__*/', () => fs.readFileSync('writer.js', 'utf8'))
+           .replace('/*__RULES__*/', () => fs.readFileSync('rules.js', 'utf8'))
            .replace('/*__SAMPLE__*/null', () => fs.readFileSync('test/sample.json', 'utf8'));
 fs.mkdirSync('dist', { recursive: true });
 fs.writeFileSync('dist/artifact.html', body);
