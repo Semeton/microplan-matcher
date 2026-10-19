@@ -671,7 +671,7 @@
         const aVal = vc != null && recOf(anc) ? recOf(anc).values[vc] : null;
         const kSum = vc != null ? kids.reduce((t, k) => t + ((recOf(k) || { values: {} }).values[vc] || 0), 0) : null;
         const isTotal = aVal != null && kSum && Math.abs(aVal - kSum) <= Math.max(1, kSum * 0.01);
-        const nums = aVal != null && kSum != null ? ` (${Math.round(aVal * 100) / 100} on this row; the ${below} rows under it add up to ${Math.round(kSum * 100) / 100})` : '';
+        const nums = aVal != null && kSum != null ? ` (${Math.round(aVal).toLocaleString("en")} on this row; the ${below} rows under it add up to ${Math.round(kSum).toLocaleString("en")})` : '';
         if (aRef && !isTotal && (rowNo(aRef) > firstKid || aVal != null)) {
           // the row sits among its children: almost always a child row whose name was left blank
           add('error', 'Missing name', `Row ${rowNo(aRef)} has targets but no ${below} name${nums}. It sits under ${label(tree, anc)}, so its targets would be counted for ${an.name} itself`, aRef);
@@ -968,7 +968,7 @@
         if (!best || best.rate < 0.8) continue;
         for (const m of best.usable) {
           const sum = best.sub.reduce((x, c) => x + m.values[c], 0);
-          if (Math.abs(sum - m.values[total]) > 1) add('warn', 'Total does not add up', `${valueLabels[total]} is ${Math.round(m.values[total] * 100) / 100} but ${best.sub.map((c) => valueLabels[c]).join(' + ')} = ${Math.round(sum * 100) / 100}`, m.sheet + '!' + m.row);
+          if (Math.abs(sum - m.values[total]) > 1) add('warn', 'Total does not add up', `${valueLabels[total]} is ${Math.round(m.values[total]).toLocaleString("en")} but ${best.sub.map((c) => valueLabels[c]).join(' + ')} = ${Math.round(sum).toLocaleString("en")}`, m.sheet + '!' + m.row);
         }
       }
     }

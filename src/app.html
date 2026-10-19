@@ -1096,8 +1096,10 @@ function dupGrid(issues, showAll) {
 }
 /** Long microplan headers ("Target population to reach perDP against the boundaryn in column H 3-<12 months") → a short form. */
 function shortLabel(l) { const t = String(l || '').replace(/\s+/g, ' ').trim(); if (t.length <= 28) return t; const m = t.match(/\d+\s*-\s*<?\s*\d+\s*(months|meses|years)/i); let head = t.replace(m ? m[0] : '', '').split(/ against | per | to reach /i)[0].trim(); if (head.length > 26) head = head.slice(0, 24) + '…'; return head + (m ? ' ' + m[0] : ''); }
-/** Show long decimals (population ÷ 1.8) rounded to 2 places; edits still keep whatever is typed. */
-function numText(v) { const n = Number(String(v).replace(/,/g, '')); return v === '' || v == null || !isFinite(n) ? String(v == null ? '' : v) : Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100); }
+/** Targets are whole numbers in everything the tool writes (template and prepared microplan), so cards show them the same way.
+ *  Decimals come from formulas such as population ÷ 1.8; the original file keeps them until a field is edited. */
+function numText(v) { const n = Number(String(v).replace(/,/g, '')); return v === '' || v == null || !isFinite(n) ? String(v == null ? '' : v) : String(Math.round(n)); }
+function wholeNum(v) { if (v == null || v === '') return ''; const n = Number(String(v).replace(/,/g, '')); return isFinite(n) ? Math.round(n) : v; }
 function rowGrid(refs, rule, showAll) {
   const shown = showAll ? refs : refs.slice(0, ROWS_SHOWN);
   const fieldInput = (sheet, ri, c, ref) => `<label><span class="rc-label">${esc(c.label)}</span><input type="text" data-cell="${esc(sheet)}|${ri}|${c.c}|${c.kind}" value="${esc(c.kind === 'n' ? numText(cellAt(sheet, ri, c.c)) : cellAt(sheet, ri, c.c))}" aria-label="${esc(c.label)}, ${esc(ref)}"${c.kind === 'n' ? ' inputmode="numeric"' : c.kind === 'p' ? ' inputmode="tel"' : ''}></label>`;
@@ -1418,7 +1420,7 @@ function savePrepared() {
   const levels = T.levelLabels.slice(0, T.depth + 1);
   const wb = XLSX.utils.book_new();
   const mp = [levels.concat(valueCols.map(vLabel))];
-  for (const m of R.matched) { if (!m.code) continue; const n = T.nodes.get(m.code); const p = n.path.slice(); while (p.length < levels.length) p.push(''); mp.push(p.concat(valueCols.map((c) => (m.values[c] == null ? '' : m.values[c])))); }
+  for (const m of R.matched) { if (!m.code) continue; const n = T.nodes.get(m.code); const p = n.path.slice(); while (p.length < levels.length) p.push(''); mp.push(p.concat(valueCols.map((c) => wholeNum(m.values[c])))); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(mp), 'Microplan');
   { const B = boundaryTable(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([B.levels].concat(B.rows)), 'Boundaries'); }
   const byRef = new Map(); for (const i of R.issues) for (const r of [i.ref].concat(i.refs || []).filter(Boolean)) { if (!byRef.has(r)) byRef.set(r, new Set()); byRef.get(r).add(i.rule === 'Duplicate phone' ? 'phone used twice' : shortMsg(i)); }
