@@ -176,7 +176,7 @@
     opts = opts || {};
     const recs = mdmsRecords(json); const patch = {}; const notes = []; const found = [];
     const errs = mdmsErrors(json);
-    if (!recs.length) return { patch, notes: [errs.length ? 'The console returned an error instead of rules: ' + errs.join('; ') + '.' : 'No MDMS records found in that response.'], found, errors: errs };
+    if (!recs.length) return { patch, notes: [errs.length ? 'The console returned an error instead of rules: ' + errs.join('; ') + '.' + (errs.some((e) => /QUERY_EXECUTION_ERROR/.test(e)) ? ' This usually means the tenant id is wrong for that console (Sierra Leone uses si, not sl).' : '') : 'No MDMS records found in that response.'], found, errors: errs };
     if (errs.length) notes.push('Some searches failed on the console: ' + errs.join('; ') + '.');
     const isUser = (r) => /(^|\.)user$/i.test(r.id) || /user/i.test(r.data.title || '') || propsOf(r.data).some((x) => /PHONE_NUMBER/i.test(x.name || ''));
     const user = recs.find((r) => /schemas$/i.test(r.schemaCode) && isUser(r)) || recs.find(isUser);
