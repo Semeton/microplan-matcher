@@ -187,7 +187,7 @@ td select { min-width: 200px; }
 .role-code { display: block; font-family: var(--f-mono); font-size: 0.72rem; color: var(--faint); font-weight: 400; }
 .status { font-size: 0.86rem; color: var(--muted); min-height: 1.4em; }
 .status:empty { display: none; }
-.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 7px; font-size: 0.88rem; max-width: calc(100% - 32px); z-index: 10; }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); top: calc(16px + env(safe-area-inset-top, 0px)); box-shadow: var(--card-shadow); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 7px; font-size: 0.88rem; max-width: calc(100% - 32px); z-index: 10; }
 footer { font-size: 0.8rem; color: var(--faint); text-align: center; }
 @media (max-width: 560px) { .wrap { padding-inline: 16px; padding-block: 24px 56px; } .panel { padding: 20px 16px; } .row { grid-template-columns: 1fr; gap: 4px; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -1058,7 +1058,7 @@ function issueGroup(g) {
   }
   actions += `<button type="button" class="quiet" data-ack="${esc(key)}">${g.rule === 'Targets on one child per parent' ? 'Keep as given' : g.sev === 'error' ? 'Ignore this check' : 'Mark as OK'}</button>`;
   const detail = g.rule === 'Phone numbers' ? `${plural(g.list.length, 'user')} with a missing, invalid or repeated number` + (g.list.some((i) => i.rule === 'Phone already in template') ? ', or one already used in the template' : '') : first.codes ? esc(first.message.split(', e.g.')[0]) : first.variants && g.rule === 'Special characters' ? esc(first.message.split(' (e.g.')[0]) : g.list.length > 1 ? '' : esc(first.message);
-  return `<div class="fact issue ${sev}"><span class="mark ${sev}">!</span><div class="t"><span class="ttl">${esc(g.rule)}</span> <span class="muted">· ${fmt(g.list.length > 1 ? g.list.length : (first.codes || first.variants || [0]).length)}</span><span class="sev-tag ${sev}">${sev === 'err' ? 'Must fix' : 'Check'}</span>
+  return `<div class="fact issue ${sev}"><span class="mark ${sev}">!</span><div class="t"><span class="ttl">${esc(g.rule)}</span> <span class="muted">· ${fmt(g.list.length > 1 ? g.list.length : first.count || (first.codes || first.variants || [0]).length)}</span><span class="sev-tag ${sev}">${sev === 'err' ? 'Must fix' : 'Check'}</span>
     ${detail ? `<div class="d">${detail}</div>` : ''}${HINT[g.rule] ? `<div class="d">${esc(HINT[g.rule])}</div>` : ''}
     ${body}<div class="choices" style="margin-top:6px;gap:2px">${actions}</div></div></div>`;
 }

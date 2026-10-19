@@ -696,7 +696,7 @@
         if (!m.values) continue;
         for (const c of valueCols) { const v = m.values[c]; if (v === undefined || v === null) continue; if (v < 0) add('error', 'Bad number', (valueLabels[c] || 'col ' + c) + ' = ' + v + ' (negative)', m.sheet + '!' + m.row); else if (!Number.isInteger(v)) { decimals.n++; if (!decimals.eg) decimals.eg = v; } }
       }
-      if (decimals.n) add('warn', 'Decimal targets', `${decimals.n} target values are decimals (e.g. ${Math.round(decimals.eg * 1000) / 1000}); they are rounded to whole numbers when written`);
+      if (decimals.n) { add('warn', 'Decimal targets', `${decimals.n.toLocaleString('en')} target values are decimals (e.g. ${Math.round(decimals.eg * 1000) / 1000}); they are rounded to whole numbers when written`); issues[issues.length - 1].count = decimals.n; }
     }
 
     // users
