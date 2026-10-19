@@ -174,6 +174,9 @@ td select { min-width: 200px; }
   .demo-table td select { min-width: 0; width: 100%; }
   .demo-table input[type="number"] { width: 100%; }
 }
+.bnd-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 12px 0; display: grid; gap: 6px; }
+.bnd-box .t { font-weight: 600; }
+.bnd-box p { margin: 0; }
 .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .settings .field { display: grid; gap: 4px; font-size: 0.85rem; color: var(--muted); }
 .actionbar { position: sticky; bottom: 0; z-index: 2; background: var(--surface); border-top: 1px solid var(--line); margin: 0 -28px -28px; padding: 14px 28px calc(14px + env(safe-area-inset-bottom, 0px)); border-radius: 0 0 10px 10px; display: grid; gap: 6px; }
@@ -249,7 +252,7 @@ const plural = (n, w, p) => `${fmt(n)} ${n === 1 ? w : (p || pluralWord(w))}`;
 const S = {
   step: 1, example: false, busy: '',
   tplBuf: null, tplName: '', tree: null, facts: null,
-  mpName: '', mpSheets: [], analyses: [],
+  mpName: '', mpSheets: [], analyses: [], bndTop: {},
   cfg: { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: 'ng', empType: '', skipBadUsers: true },
   aliases: {}, res: null, showAuto: false, exportMsg: '',
   mode: 'plan', demo: null, demoMsg: '',
@@ -348,7 +351,7 @@ function phoneOptions(cur) {
   return opt('ng', 'Nigeria (10 digits)', cur) + opt('sl', 'Sierra Leone (9 digits)', cur) + opt('raw', 'Any (7–15 digits)', cur);
 }
 async function loadMicroplan(buf, name) {
-  S.mpName = name; S.mpOrig = sheetsFromXLSX(buf, true);
+  S.mpName = name; S.bndTop = {}; S.mpOrig = sheetsFromXLSX(buf, true);
   S.edits = { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }; S.acks = new Set(); S.open = {};
   applyEdits();
 }
@@ -984,12 +987,13 @@ function viewExport() {
     ${lifted || editsBox ? `<div class="facts">${editsBox}${lifted}</div>` : ''}
     ${active.length ? `<div class="facts issues">${active.map(issueGroup).join('')}</div>` : ''}
     ${acked.length ? `<details class="edit"><summary>${plural(acked.length, 'check')} marked as OK</summary><div class="facts">${acked.map((g) => `<div class="fact"><span class="mark ok">✓</span><div class="t">${esc(g.rule)} <span class="muted">· ${fmt(g.list.length)}</span><div class="d"><button type="button" class="quiet" data-unack="${esc(g.rule)}">Undo</button></div></div></div>`).join('')}</div></details>` : ''}
+    ${isSelf() ? bndSettings() : ''}
     ${S.facts.facilityCount ? `<div class="settings">${activationField('selAct', S.activate, usedCodes(), 'Facilities to mark Active', 'In the microplan’s area')}</div>` : ''}
-    <p class="muted small">${isSelf() ? 'The prepared microplan has one clean sheet of boundaries and targets (spellings unified, per-LGA sheets merged, header and total rows removed), a Users sheet with phones and console roles, and the checks. When the console’s unified template is ready, open From microplan with the template and this file.' : 'Edits change this run and the corrected microplan, never your original file. Only target cells, new user rows and facility status are written to the template; hidden helper columns and dropdowns stay as the console made them.'}</p>
+    <p class="muted small">${isSelf() ? 'The prepared microplan has one clean sheet of boundaries and targets (spellings unified, per-LGA sheets merged, header and total rows removed), a Boundaries sheet (one row per lowest boundary with its full path from Country, the layout for boundary upload), a Users sheet with phones and console roles, and the checks. Download boundary list gives that sheet on its own. When the console’s unified template is ready, open From microplan with the template and this file.' : 'Edits change this run and the corrected microplan, never your original file. Only target cells, new user rows and facility status are written to the template; hidden helper columns and dropdowns stay as the console made them.'}</p>
     ${nav(3)}
     <div class="actionbar">
       <div class="state${nErr ? ' err' : ''}">${nErr ? `${plural(nErr, 'problem')} left — you can still download, but ${isSelf() ? 'fix them before ingestion' : 'the console may reject those rows'}` : nWarn ? `Ready · ${plural(nWarn, 'thing')} to check` : isSelf() ? 'Ready for ingestion' : 'Ready to upload'}</div>
-      <div class="row-btns">${isSelf() ? '<button type="button" class="primary" id="btnPrep">Download prepared microplan</button>' : '<button type="button" class="primary" id="btnFill">Download filled template</button><button type="button" class="quiet" id="btnReport">Download report</button>'}</div>
+      <div class="row-btns">${isSelf() ? '<button type="button" class="primary" id="btnPrep">Download prepared microplan</button><button type="button" class="quiet" id="btnBnd">Download boundary list</button>' : '<button type="button" class="primary" id="btnFill">Download filled template</button><button type="button" class="quiet" id="btnReport">Download report</button>'}</div>
       <div class="status" id="expStatus" role="status">${esc(S.exportMsg)}</div>
     </div>`;
 }
@@ -1216,6 +1220,7 @@ view.addEventListener('click', async (e) => {
   if (t.id === 'dFill') { demoFill(t); return; }
   if (t.id === 'dList') { demoCsv(); return; }
   if (t.id === 'btnFill') { fillAndSave(t); return; }
+  if (t.id === 'btnBnd') { working($('expStatus'), 'Writing the boundary list…'); await paint(); const B = saveBoundaries(); $('expStatus').textContent = `Boundary list downloaded · ${fmt(B.rows.length)} rows, ${B.levels[0]} to ${B.levels[B.levels.length - 1]}` + (B.missing.length ? ` (no ${B.missing.join(' or ')} column — fill it in above to add one)` : '') + '.'; return; }
   if (t.id === 'btnPrep') { working($('expStatus'), 'Preparing the microplan…'); await paint(); savePrepared(); $('expStatus').textContent = 'Prepared microplan downloaded.'; return; }
   if (t.id === 'btnReport') { saveReport(); return; }
 });
@@ -1237,6 +1242,7 @@ view.addEventListener('change', async (e) => {
     catch (err) { console.error(err); S.loading = { id: t.id, name: f.name, error: `Could not read this file. ${err && err.message ? err.message : 'Is it an .xlsx workbook?'}` }; }
     render(); return;
   }
+  if (t.dataset.bndtop !== undefined) { S.bndTop[t.dataset.bndtop] = t.value.trim(); return; }
   if (t.id === 'impAlias' && t.files[0]) {
     try { const j = JSON.parse(await t.files[0].text()); Object.assign(S.aliases, j.aliases || {}); saveAliases(); run(); render(); toast(`Imported ${plural(Object.keys(j.aliases || {}).length, 'decision')}`); }
     catch (err) { toast('That file is not a decisions export'); }
@@ -1366,6 +1372,46 @@ function saveReport() {
 }
 
 /** Prepared microplan: clean boundaries + targets, users with console roles, and the checks — ready for From microplan. */
+const NG_STATES = ['Abia', 'Adamawa', 'Akwa Ibom', 'Anambra', 'Bauchi', 'Bayelsa', 'Benue', 'Borno', 'Cross River', 'Delta', 'Ebonyi', 'Edo', 'Ekiti', 'Enugu', 'FCT', 'Gombe', 'Imo', 'Jigawa', 'Kaduna', 'Kano', 'Katsina', 'Kebbi', 'Kogi', 'Kwara', 'Lagos', 'Nasarawa', 'Niger', 'Ogun', 'Ondo', 'Osun', 'Oyo', 'Plateau', 'Rivers', 'Sokoto', 'Taraba', 'Yobe', 'Zamfara'];
+/** Levels the boundary upload needs above the microplan's first column: the console hierarchy starts at Country. */
+function bndTop() {
+  const kinds = S.tree.levelLabels.map((l) => (/\b(country|nation(al)?)\b/i.test(l) ? 'country' : MP.hierKind(l)));
+  const need = kinds.includes('country') ? [] : kinds.includes('state') ? ['Country'] : kinds.includes('lga') ? ['Country', 'State'] : ['Country'];
+  const guess = (k) => {
+    if (k === 'Country') return S.cfg.phoneFmt === 'sl' ? 'Sierra Leone' : 'Nigeria';
+    const hay = [S.mpName].concat(S.mpSheets.map((x) => x.name)).join(' ').replace(/[_\-.]+/g, ' ');
+    return NG_STATES.find((st) => new RegExp('\\b' + st.replace(' ', '\\s*') + '\\b', 'i').test(hay)) || '';
+  };
+  return need.map((k) => ({ level: k, value: S.bndTop[k] != null ? S.bndTop[k] : guess(k) }));
+}
+/** One row per lowest boundary with its full path from Country down — the layout of the programme's "HCM boundary"
+ *  sheet used for console boundary upload. Spelling variants merged by the checks count once. */
+function boundaryTable() {
+  const T = S.tree; const top = bndTop().filter((t) => t.value);
+  const levels = top.map((t) => t.level).concat(T.levelLabels.slice(0, T.depth + 1));
+  const lead = top.map((t) => t.value); const rows = [];
+  const walk = (code) => { const n = T.nodes.get(code); if (!n) return; if (!n.children.length) { const p = n.path.slice(); while (p.length < T.depth + 1) p.push(''); rows.push(lead.concat(p)); } for (const c of n.children) walk(c); };
+  for (const r of T.roots) walk(r);
+  const counts = top.map((t) => [t.level, 1]).concat(T.levelLabels.slice(0, T.depth + 1).map((l, i) => { let n = 0; for (const x of T.nodes.values()) if (x.level === i) n++; return [l, n]; }));
+  return { levels, rows, counts, missing: bndTop().filter((t) => !t.value).map((t) => t.level) };
+}
+function bndSettings() {
+  const top = bndTop(); if (!top.length) return '';
+  return `<div class="bnd-box"><div class="t">Boundary list</div><p class="muted small">The microplan starts at ${esc(S.tree.levelLabels[0])}. Boundary upload needs the full path from Country, so ${top.length > 1 ? 'these are' : 'this is'} added to every row. Leave ${top.length > 1 ? 'one' : 'it'} blank to leave it out.</p>
+    <div class="settings">${top.map((t) => `<label class="field">${esc(t.level)}<input type="text" data-bndtop="${esc(t.level)}" value="${esc(t.value)}" placeholder="${t.level === 'State' ? 'e.g. Abia' : ''}"></label>`).join('')}</div></div>`;
+}
+function saveBoundaries() {
+  const B = boundaryTable();
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([B.levels].concat(B.rows)); ws['!cols'] = B.levels.map(() => ({ wch: 24 }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Boundaries');
+  const left = S.res ? S.res.issues.filter((i) => i.severity === 'error' || i.rule === 'Near-duplicate names') : [];
+  const total = B.counts.reduce((a, [, n]) => a + n, 0);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Boundary list'], ['Source', S.mpName], ['Prepared', new Date().toISOString()], ['Rows', B.rows.length + ' (one per ' + B.levels[B.levels.length - 1] + ', full path from ' + B.levels[0] + ')'], [], ['Level', 'Boundaries']].concat(B.counts, [['Total', total], [],
+    ['Open checks', left.length ? left.length + ' (spelling variants or problem rows can add or misplace boundaries; fix them in Check microplan first)' : 'none']])), 'Summary');
+  saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_boundaries.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: XLSX_MIME }));
+  return B;
+}
 function savePrepared() {
   const R = S.res, T = S.tree; const a = A(S.cfg.sheet);
   const valueCols = R.valueCols; const vLabel = (c) => ((a && a.cols[c]) || {}).label || 'Value';
@@ -1374,6 +1420,7 @@ function savePrepared() {
   const mp = [levels.concat(valueCols.map(vLabel))];
   for (const m of R.matched) { if (!m.code) continue; const n = T.nodes.get(m.code); const p = n.path.slice(); while (p.length < levels.length) p.push(''); mp.push(p.concat(valueCols.map((c) => (m.values[c] == null ? '' : m.values[c])))); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(mp), 'Microplan');
+  { const B = boundaryTable(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([B.levels].concat(B.rows)), 'Boundaries'); }
   const byRef = new Map(); for (const i of R.issues) for (const r of [i.ref].concat(i.refs || []).filter(Boolean)) { if (!byRef.has(r)) byRef.set(r, new Set()); byRef.get(r).add(i.rule === 'Duplicate phone' ? 'phone used twice' : shortMsg(i)); }
   if (R.users.length) {
     const us = [levels.concat(['Name', 'Phone Number', 'Designation', 'Role', 'Check'])];
@@ -1390,11 +1437,11 @@ function savePrepared() {
     ['Boundary rows', mp.length - 1]].concat(counts.map(([l, n]) => [l, n])).concat([['People', R.users.length], ['People ready', addableUsers().length], [],
     ['Errors', R.issues.filter((i) => i.severity === 'error').length], ['Warnings', R.issues.filter((i) => i.severity !== 'error').length], ['Spelling variants unified', variants], ['Edits made', S.edits.log.length], [],
     ['Next step', 'When the console unified template is ready: Microplan Matcher → From microplan → add the template and this file.']])), 'Summary');
-  wb.SheetNames = ['Microplan'].concat(R.users.length ? ['Users'] : [], ['Checks', 'Summary']);
+  wb.SheetNames = ['Microplan', 'Boundaries'].concat(R.users.length ? ['Users'] : [], ['Checks', 'Summary']);
   saveFile(`${S.mpName.replace(/\.[^.]+$/, '')}_prepared.xlsx`, new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: XLSX_MIME }));
 }
 function clearAll() {
-  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {}, loading: null, tpl: null, selfLabels: null, activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' } });
+  Object.assign(S, { example: false, tplBuf: null, tplName: '', tree: null, facts: null, mpName: '', mpSheets: [], analyses: [], bndTop: {}, res: null, aliases: {}, exportMsg: '', step: 1, demo: null, demoMsg: '', mpOrig: [], edits: { patches: {}, removed: new Set(), added: {}, log: [], seq: 0 }, acks: new Set(), open: {}, loading: null, tpl: null, selfLabels: null, activate: 'used', add: { rows: [], seq: 0, paste: false, msg: '', empType: '', activate: 'used' } });
   S.cfg = { sheet: null, extra: [], levelMap: {}, targetMap: {}, splitMode: 'flag', userSheet: null, person: {}, userLevelMap: {}, roleMap: {}, phoneFmt: 'ng', empType: '', skipBadUsers: true };
   if (isSelf()) { S.tree = selfPlaceholder(); S.facts = selfFacts(); }
 }
